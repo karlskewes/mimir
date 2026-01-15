@@ -8,6 +8,10 @@
 
     // The prefix including product name used when building dashboards.
     dashboard_prefix: '%(product)s / ' % $._config.product,
+
+    // The prefix for external Grafana dashboard URL's, including scheme, e.g: 'https://grafana.example.com'.
+    externalGrafanaURLPrefix: null,
+
     // Controls tooltip and hover highlight behavior across different panels
     // 0: Default, the cross hair will appear on only one panel
     // 1: Shared crosshair, the crosshair will appear on all panels but the

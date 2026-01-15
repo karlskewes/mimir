@@ -197,5 +197,13 @@
     },
   ],
 
-  groups+: $.withRunbookURL('https://grafana.com/docs/mimir/latest/operators-guide/mimir-runbooks/#%s', $.withExtraLabelsAnnotations(alertGroups)),
+  groups+:
+    $.withDashboardURL(
+      'mimir-compactor.json',
+      'Compactor',
+      $.withRunbookURL(
+        'https://grafana.com/docs/mimir/latest/operators-guide/mimir-runbooks/#%s',
+        $.withExtraLabelsAnnotations(alertGroups)
+      )
+    ),
 }

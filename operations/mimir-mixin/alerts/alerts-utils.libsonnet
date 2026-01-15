@@ -14,6 +14,37 @@
     else if std.isString(job) then job
     else error 'expected job "%s" to be a string or an array, but it is type "%s"' % [job, std.type(job)],
 
+  local formatDashboardURL(filename, name) =
+    if $._config.externalGrafanaURLPrefix == null then {} else {
+      local url = '%(prefix)s/d/%(uid)s/%(name)s' % {
+        prefix: $._config.externalGrafanaURLPrefix,
+        uid: std.md5(filename),
+        name: std.asciiLower(name),
+      },
+      dashboard_url: url,
+    },
+
+  dashboardURL(filename, name, cluster=null, namespace=null, params=[])::
+    formatDashboardURL(filename, name),
+
+  withDashboardURL(filename, name, groups)::
+    local update_rule(rule) =
+      if std.objectHas(rule, 'alert')
+      then rule {
+        annotations+:
+          formatDashboardURL(filename, name),
+      }
+      else rule;
+    [
+      group {
+        rules: [
+          update_rule(alert)
+          for alert in group.rules
+        ],
+      }
+      for group in groups
+    ],
+
   withRunbookURL(url_format, groups)::
     local update_rule(rule) =
       if std.objectHas(rule, 'alert')

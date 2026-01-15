@@ -143,5 +143,13 @@
     },
   ],
 
-  groups+: $.withRunbookURL('https://grafana.com/docs/mimir/latest/operators-guide/mimir-runbooks/#%s', $.withExtraLabelsAnnotations(alertGroups)),
+  groups+:
+    $.withDashboardURL(
+      'mimir-alertmanager.json',
+      'Alertmanager',
+      $.withRunbookURL(
+        'https://grafana.com/docs/mimir/latest/operators-guide/mimir-runbooks/#%s',
+        $.withExtraLabelsAnnotations(alertGroups)
+      )
+    ),
 }
