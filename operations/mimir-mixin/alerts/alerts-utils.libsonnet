@@ -18,9 +18,15 @@
     if $._config.externalGrafanaURLPrefix == null then {} else {
       local url = '%(prefix)s/d/%(uid)s/%(name)s' % {
         prefix: $._config.externalGrafanaURLPrefix,
+        // TODO: consider making some dashboardID's that we can index into from alerts, not just dashboards
+        // uid: $._config.grafanaDashboardIDs['mimir-dashboard_name.json'],
         uid: std.md5(filename),
         name: std.asciiLower(name),
       },
+      // TODO: join params with &
+      // add cluster and namespace specifically?
+      // take a map?
+      // local queryParams = '?${datasource:queryparam}&var-cluster=$cluster&var-namespace=${__data.fields.Namespace}';
       dashboard_url: url,
     },
 

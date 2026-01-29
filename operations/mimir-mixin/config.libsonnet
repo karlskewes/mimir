@@ -11,6 +11,7 @@
 
     // The prefix for external Grafana dashboard URL's, including scheme, e.g: 'https://grafana.example.com'.
     externalGrafanaURLPrefix: null,
+    // externalGrafanaURLPrefix: 'https://grafana.example.com',
 
     // Controls tooltip and hover highlight behavior across different panels
     // 0: Default, the cross hair will appear on only one panel

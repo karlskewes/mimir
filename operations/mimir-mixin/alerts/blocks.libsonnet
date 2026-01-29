@@ -267,6 +267,7 @@
           annotations: {
             message: '%(product)s store-gateway in %(alert_aggregation_variables)s is querying level 1 blocks, indicating the compactor may not be keeping up with compaction.' % $._config,
           } + $.dashboardURL('mimir-compactor.json', 'Compactor'),
+          // TODO: add Mimir Queries dashboard to see volume of level 1 block queries.
         },
       ],
     },
