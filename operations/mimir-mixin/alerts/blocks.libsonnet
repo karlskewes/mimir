@@ -244,7 +244,7 @@
           },
           annotations: {
             message: '%(product)s bucket index for tenant {{ $labels.user }} in %(alert_aggregation_variables)s has not been updated since {{ $value | humanizeDuration }}.' % $._config,
-          } + $.dashboardURL('mimir-compactor.json', 'Compactor'),
+          } + $.dashboardURL('mimir-compactor'),
         },
         {
           // Alert if there's sustained querying of level 1 blocks, which indicates the compactor
@@ -266,7 +266,7 @@
           },
           annotations: {
             message: '%(product)s store-gateway in %(alert_aggregation_variables)s is querying level 1 blocks, indicating the compactor may not be keeping up with compaction.' % $._config,
-          } + $.dashboardURL('mimir-compactor.json', 'Compactor'),
+          } + $.dashboardURL('mimir-compactor'),
           // TODO: add Mimir Queries dashboard to see volume of level 1 block queries.
         },
       ],

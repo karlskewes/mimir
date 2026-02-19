@@ -14,13 +14,13 @@
     else if std.isString(job) then job
     else error 'expected job "%s" to be a string or an array, but it is type "%s"' % [job, std.type(job)],
 
-  local formatDashboardURL(filename, name) =
+  local formatDashboardURL(name) =
     if $._config.externalGrafanaURLPrefix == null then {} else {
       local url = '%(prefix)s/d/%(uid)s/%(name)s' % {
         prefix: $._config.externalGrafanaURLPrefix,
         // TODO: consider making some dashboardID's that we can index into from alerts, not just dashboards
         // uid: $._config.grafanaDashboardIDs['mimir-dashboard_name.json'],
-        uid: std.md5(filename),
+        uid: std.md5(name + '.json'),
         name: std.asciiLower(name),
       },
       // TODO: join params with &
@@ -30,15 +30,15 @@
       dashboard_url: url,
     },
 
-  dashboardURL(filename, name, cluster=null, namespace=null, params=[])::
-    formatDashboardURL(filename, name),
+  dashboardURL(name, cluster=null, namespace=null, params=[])::
+    formatDashboardURL(name),
 
-  withDashboardURL(filename, name, groups)::
+  withDashboardURL(name, groups)::
     local update_rule(rule) =
       if std.objectHas(rule, 'alert')
       then rule {
         annotations+:
-          formatDashboardURL(filename, name),
+          formatDashboardURL(name),
       }
       else rule;
     [

@@ -22,7 +22,7 @@ local utils = import 'mixin-utils/utils.libsonnet';
     labels: $.histogramLabels({ severity: 'warning' }, histogram_type, nhcb=false),
     annotations: {
       message: '%(product)s {{ $labels.%(per_instance_label)s }} in %(alert_aggregation_variables)s in "starting" phase is not reducing consumption lag of write requests read from Kafka.' % $._config,
-    } + $.dashboardURL('mimir-writes.json', 'Writes'),
+    } + $.dashboardURL('mimir-writes'),
   },
 
   local runningIngesterReceiveDelayTooHigh(histogram_type, threshold_value, for_duration, threshold_label) = {

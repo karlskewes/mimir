@@ -145,8 +145,7 @@
 
   groups+:
     $.withDashboardURL(
-      'mimir-alertmanager.json',
-      'Alertmanager',
+      'mimir-alertmanager',
       $.withRunbookURL(
         'https://grafana.com/docs/mimir/latest/operators-guide/mimir-runbooks/#%s',
         $.withExtraLabelsAnnotations(alertGroups)

@@ -199,8 +199,7 @@
 
   groups+:
     $.withDashboardURL(
-      'mimir-compactor.json',
-      'Compactor',
+      'mimir-compactor',
       $.withRunbookURL(
         'https://grafana.com/docs/mimir/latest/operators-guide/mimir-runbooks/#%s',
         $.withExtraLabelsAnnotations(alertGroups)
