@@ -6,6 +6,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-kit/log"
 	"github.com/grafana/dskit/user"
@@ -39,9 +40,12 @@ func parseBlockedQueriesYAML(t *testing.T, yamlStr string) []validation.BlockedQ
 }
 
 func TestQueryBlockerMiddleware_RangeAndInstantQuery(t *testing.T) {
+	now := time.Now()
 	tests := []struct {
 		name            string
 		query           string
+		queryStart      time.Time
+		queryEnd        time.Time
 		limitsYAML      string
 		expectedBlocked bool
 	}{
@@ -212,6 +216,167 @@ blocked_queries:
 			query:           "rate(metric_counter[5m])",
 			expectedBlocked: false,
 		},
+		{
+			name: "time range longer than threshold",
+			limitsYAML: `
+blocked_queries:
+  - time_range_longer_than: "24h"
+    reason: "queries longer than 1 day are not allowed"
+`,
+			query:           "up",
+			queryStart:      now.Add(-48 * time.Hour),
+			queryEnd:        now,
+			expectedBlocked: true,
+		},
+		{
+			name: "time range shorter than longer_than threshold - no match",
+			limitsYAML: `
+blocked_queries:
+  - time_range_longer_than: "24h"
+`,
+			query:           "up",
+			queryStart:      now.Add(-12 * time.Hour),
+			queryEnd:        now,
+			expectedBlocked: false,
+		},
+		{
+			name: "time range shorter than threshold",
+			limitsYAML: `
+blocked_queries:
+  - time_range_shorter_than: "1h"
+    reason: "queries shorter than 1 hour are not useful"
+`,
+			query:           "up",
+			queryStart:      now.Add(-30 * time.Minute),
+			queryEnd:        now,
+			expectedBlocked: true,
+		},
+		{
+			name: "time range longer than shorter_than threshold - no match",
+			limitsYAML: `
+blocked_queries:
+  - time_range_shorter_than: "1h"
+`,
+			query:           "up",
+			queryStart:      now.Add(-2 * time.Hour),
+			queryEnd:        now,
+			expectedBlocked: false,
+		},
+		{
+			name: "outside acceptable window - too short",
+			limitsYAML: `
+blocked_queries:
+  - time_range_longer_than: "504h"
+    time_range_shorter_than: "168h"
+    reason: "queries must be between 7 and 21 days"
+`,
+			query:           "up",
+			queryStart:      now.Add(-3 * 24 * time.Hour), // 3 days - too short
+			queryEnd:        now,
+			expectedBlocked: true,
+		},
+		{
+			name: "outside acceptable window - too long",
+			limitsYAML: `
+blocked_queries:
+  - time_range_longer_than: "504h"
+    time_range_shorter_than: "168h"
+    reason: "queries must be between 7 and 21 days"
+`,
+			query:           "up",
+			queryStart:      now.Add(-30 * 24 * time.Hour), // 30 days - too long
+			queryEnd:        now,
+			expectedBlocked: true,
+		},
+		{
+			name: "inside acceptable window (7-21 days) - no match",
+			limitsYAML: `
+blocked_queries:
+  - time_range_longer_than: "504h"
+    time_range_shorter_than: "168h"
+`,
+			query:           "up",
+			queryStart:      now.Add(-14 * 24 * time.Hour), // 14 days - in window
+			queryEnd:        now,
+			expectedBlocked: false,
+		},
+		{
+			name: "inside blocked window (2-3 hours)",
+			limitsYAML: `
+blocked_queries:
+  - time_range_shorter_than: "3h"
+    time_range_longer_than: "2h"
+    reason: "queries between 2 and 3 hours are blocked"
+`,
+			query:           "up",
+			queryStart:      now.Add(-150 * time.Minute), // 2.5 hours - inside blocked window
+			queryEnd:        now,
+			expectedBlocked: true,
+		},
+		{
+			name: "outside blocked window (too short) - no match",
+			limitsYAML: `
+blocked_queries:
+  - time_range_shorter_than: "3h"
+    time_range_longer_than: "2h"
+`,
+			query:           "up",
+			queryStart:      now.Add(-90 * time.Minute), // 1.5 hours - too short
+			queryEnd:        now,
+			expectedBlocked: false,
+		},
+		{
+			name: "outside blocked window (too long) - no match",
+			limitsYAML: `
+blocked_queries:
+  - time_range_shorter_than: "3h"
+    time_range_longer_than: "2h"
+`,
+			query:           "up",
+			queryStart:      now.Add(-4 * time.Hour), // 4 hours - too long
+			queryEnd:        now,
+			expectedBlocked: false,
+		},
+		{
+			name: "pattern matches AND time range outside window",
+			limitsYAML: `
+blocked_queries:
+  - pattern: ".*expensive.*"
+    regex: true
+    time_range_longer_than: "24h"
+    reason: "expensive queries over 1 day are blocked"
+`,
+			query:           "rate(expensive_metric[5m])",
+			queryStart:      now.Add(-2 * 24 * time.Hour), // 2 days
+			queryEnd:        now,
+			expectedBlocked: true,
+		},
+		{
+			name: "pattern matches but time range inside window - no match",
+			limitsYAML: `
+blocked_queries:
+  - pattern: ".*expensive.*"
+    regex: true
+    time_range_longer_than: "168h"
+`,
+			query:           "rate(expensive_metric[5m])",
+			queryStart:      now.Add(-2 * 24 * time.Hour), // 2 days - under threshold
+			queryEnd:        now,
+			expectedBlocked: false,
+		},
+		{
+			name: "time range outside window but pattern doesn't match - no match",
+			limitsYAML: `
+blocked_queries:
+  - pattern: ".*expensive.*"
+    regex: true
+    time_range_longer_than: "168h"
+`,
+			query:           "rate(cheap_metric[5m])",
+			queryStart:      now.Add(-10 * 24 * time.Hour), // 10 days - over threshold
+			queryEnd:        now,
+			expectedBlocked: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -221,17 +386,50 @@ blocked_queries:
 				limits.blockedQueries = parseBlockedQueriesYAML(t, tt.limitsYAML)
 			}
 
+			// Set default times if not specified
+			start := tt.queryStart
+			end := tt.queryEnd
+			if start.IsZero() {
+				start = now.Add(-1 * time.Hour)
+			}
+			if end.IsZero() {
+				end = now
+			}
 			reqs := map[string]MetricsQueryRequest{
 				"range query": &PrometheusRangeQueryRequest{
 					queryExpr: parseQuery(t, tt.query),
+					start:     start.UnixMilli(),
+					end:       end.UnixMilli(),
 				},
 				"instant query": &PrometheusInstantQueryRequest{
 					queryExpr: parseQuery(t, tt.query),
+					time:      now.UnixMilli(),
 				},
 			}
 
 			for reqType, req := range reqs {
 				t.Run(reqType, func(t *testing.T) {
+					// Determine if this test should block for instant queries
+					// Instant queries skip time range checks, so they should only block if there's a pattern-only rule
+					expectBlocked := tt.expectedBlocked
+					if reqType == "instant query" && expectBlocked {
+						// Check if any rule has time range filters (with or without pattern)
+						hasAnyTimeRangeFilter := false
+						for _, block := range limits.blockedQueries {
+							hasTimeRange := block.TimeRangeLongerThan > 0 || block.TimeRangeShorterThan > 0
+							if hasTimeRange {
+								hasAnyTimeRangeFilter = true
+								break
+							}
+						}
+						// Instant queries should not be blocked by any rule that includes time range filters
+						// because time range checks are skipped for instant queries (start == end),
+						// and rules with both pattern + time range require BOTH to match (AND logic)
+						if hasAnyTimeRangeFilter {
+							expectBlocked = false
+						}
+					}
+
 					reg := prometheus.NewPedanticRegistry()
 					blockedQueriesCounter := promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
 						Name: "cortex_query_frontend_rejected_queries_total",
@@ -239,9 +437,9 @@ blocked_queries:
 					}, []string{"user", "reason"})
 					logger := log.NewNopLogger()
 					mw := newQueryBlockerMiddleware(limits, logger, blockedQueriesCounter)
-					_, err := mw.Wrap(&mockNextHandler{t: t, shouldContinue: !tt.expectedBlocked}).Do(user.InjectOrgID(context.Background(), "test"), req)
+					_, err := mw.Wrap(&mockNextHandler{t: t, shouldContinue: !expectBlocked}).Do(user.InjectOrgID(context.Background(), "test"), req)
 
-					if tt.expectedBlocked {
+					if expectBlocked {
 						require.Error(t, err)
 						require.Contains(t, err.Error(), globalerror.QueryBlocked)
 						require.NoError(t, promtest.GatherAndCompare(reg, strings.NewReader(`

@@ -6066,6 +6066,24 @@
                 "fieldValue": null,
                 "fieldDefaultValue": "",
                 "fieldType": "string"
+              },
+              {
+                "kind": "field",
+                "name": "time_range_longer_than",
+                "required": false,
+                "desc": "Block queries with time range longer than this duration. Set to 0 to disable.",
+                "fieldValue": null,
+                "fieldDefaultValue": 0,
+                "fieldType": "duration"
+              },
+              {
+                "kind": "field",
+                "name": "time_range_shorter_than",
+                "required": false,
+                "desc": "Block queries with time range shorter than this duration. Set to 0 to disable.",
+                "fieldValue": null,
+                "fieldDefaultValue": 0,
+                "fieldType": "duration"
               }
             ],
             "fieldValue": null,

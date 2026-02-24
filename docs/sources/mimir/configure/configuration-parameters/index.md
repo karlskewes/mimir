@@ -4512,12 +4512,22 @@ The `limits` block configures default and per-tenant limits imposed by component
 
 # List of queries to block.
 # Example:
-#   The following configuration blocks the query "rate(metric_counter[5m])".
-#   Setting the pattern to ".*" and regex to true blocks all queries.
+#   The following configuration shows various ways to block queries: by pattern,
+#   by time range, or by combining both. Time range filtering blocks queries
+#   outside the acceptable duration window.
 #   blocked_queries:
 #       - pattern: rate(metric_counter[5m])
 #         regex: false
 #         reason: because the query is misconfigured
+#       - pattern: .*expensive.*
+#         regex: true
+#         reason: expensive queries over 7 days are blocked
+#         time_range_longer_than: 1w
+#       - pattern: ""
+#         regex: false
+#         reason: queries must be between 7 and 21 days
+#         time_range_longer_than: 3w
+#         time_range_shorter_than: 1w
 blocked_queries:
   - # PromQL expression pattern to match.
     [pattern: <string> | default = ""]
@@ -4528,6 +4538,14 @@ blocked_queries:
 
     # Reason returned to clients when rejecting matching queries.
     [reason: <string> | default = ""]
+
+    # Block queries with time range longer than this duration. Set to 0 to
+    # disable. Supports duration strings like 1d, 1w, 30d.
+    [time_range_longer_than: <int> | default = ]
+
+    # Block queries with time range shorter than this duration. Set to 0 to
+    # disable. Supports duration strings like 1m, 5m, 1h.
+    [time_range_shorter_than: <int> | default = ]
 
 # (experimental) List of queries to limit and duration to limit them for.
 # Example:
