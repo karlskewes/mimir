@@ -42,17 +42,19 @@ func parseBlockedQueriesYAML(t *testing.T, yamlStr string) []validation.BlockedQ
 func TestQueryBlockerMiddleware_RangeAndInstantQuery(t *testing.T) {
 	now := time.Now()
 	tests := []struct {
-		name            string
-		query           string
-		queryStart      time.Time
-		queryEnd        time.Time
-		limitsYAML      string
-		expectedBlocked bool
+		name                   string
+		query                  string
+		queryStart             time.Time
+		queryEnd               time.Time
+		limitsYAML             string
+		expectedBlockedRange   bool
+		expectedBlockedInstant bool
 	}{
 		{
 			name:            "empty limits",
 			query:           "rate(metric_counter[5m])",
-			expectedBlocked: false,
+			expectedBlockedRange:   false,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "single line non-regex pattern",
@@ -62,7 +64,8 @@ blocked_queries:
     regex: false
 `,
 			query:           "rate(metric_counter[5m])",
-			expectedBlocked: true,
+			expectedBlockedRange:   true,
+			expectedBlockedInstant: true,
 		},
 		{
 			name: "non-canonical pattern - label order differs",
@@ -72,7 +75,8 @@ blocked_queries:
     regex: false
 `,
 			query:           `up{job="test",pod="test"}`, // Query has labels in different order
-			expectedBlocked: true,
+			expectedBlockedRange:   true,
+			expectedBlockedInstant: true,
 		},
 		{
 			name: "non-canonical pattern - extra whitespace and trailing comma",
@@ -82,7 +86,8 @@ blocked_queries:
     regex: false
 `,
 			query:           `up{job="test",pod="test"}`, // Query is canonical (no extra whitespace/comma)
-			expectedBlocked: true,
+			expectedBlockedRange:   true,
+			expectedBlockedInstant: true,
 		},
 		{
 			name: "non-canonical pattern - function with extra whitespace",
@@ -92,7 +97,8 @@ blocked_queries:
     regex: false
 `,
 			query:           `rate(metric_counter[5m])`, // Query is canonical (no extra whitespace)
-			expectedBlocked: true,
+			expectedBlockedRange:   true,
+			expectedBlockedInstant: true,
 		},
 		{
 			name: "non-canonical pattern - aggregation with extra whitespace",
@@ -102,7 +108,8 @@ blocked_queries:
     regex: false
 `,
 			query:           `sum(rate(metric_counter[5m]))`, // Query is canonical (no extra whitespace)
-			expectedBlocked: true,
+			expectedBlockedRange:   true,
+			expectedBlockedInstant: true,
 		},
 		{
 			name: "non-canonical pattern - aggregation with by() and extra whitespace",
@@ -112,7 +119,8 @@ blocked_queries:
     regex: false
 `,
 			query:           `sum(rate(metric_counter[5m])) by(job,pod)`, // Query is canonical (no extra whitespace)
-			expectedBlocked: true,
+			expectedBlockedRange:   true,
+			expectedBlockedInstant: true,
 		},
 		{
 			name: "by() labels not sorted - different order doesn't match",
@@ -122,7 +130,8 @@ blocked_queries:
     regex: false
 `,
 			query:           `sum(rate(metric_counter[5m])) by(pod,job)`, // Different label order in by()
-			expectedBlocked: false,
+			expectedBlockedRange:   false,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "different pattern - no match",
@@ -132,7 +141,8 @@ blocked_queries:
     regex: false
 `,
 			query:           "rate(metric_counter[15m])",
-			expectedBlocked: false,
+			expectedBlockedRange:   false,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "multiple line non-regex pattern",
@@ -146,7 +156,8 @@ blocked_queries:
 				/
 				rate(other_counter[5m])
 			`,
-			expectedBlocked: true,
+			expectedBlockedRange:   true,
+			expectedBlockedInstant: true,
 		},
 		{
 			name: "multiple line different pattern - no match",
@@ -160,7 +171,8 @@ blocked_queries:
 				/
 				rate(other_counter[15m])
 			`,
-			expectedBlocked: false,
+			expectedBlockedRange:   false,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "single line regex pattern",
@@ -170,7 +182,20 @@ blocked_queries:
     regex: true
 `,
 			query:           "rate(metric_counter[5m])",
-			expectedBlocked: true,
+			expectedBlockedRange:   true,
+			expectedBlockedInstant: true,
+		},
+		{
+			name: "block all queries with .* regex",
+			limitsYAML: `
+blocked_queries:
+  - pattern: ".*"
+    regex: true
+    reason: "all queries are blocked"
+`,
+			query:           "up",
+			expectedBlockedRange:   true,
+			expectedBlockedInstant: true,
 		},
 		{
 			name: "multiple line regex pattern",
@@ -184,7 +209,8 @@ blocked_queries:
 				/
 				rate(metric_counter[15m])
 			`,
-			expectedBlocked: true,
+			expectedBlockedRange:   true,
+			expectedBlockedInstant: true,
 		},
 		{
 			name: "regex not canonicalized - out-of-order labels don't match",
@@ -194,7 +220,8 @@ blocked_queries:
     regex: true
 `,
 			query:           `up{job="test",pod="test"}`, // Canonical query has different label order
-			expectedBlocked: false,
+			expectedBlockedRange:   false,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "regex not canonicalized - extra whitespace doesn't match",
@@ -204,7 +231,8 @@ blocked_queries:
     regex: true
 `,
 			query:           `rate(metric_counter[5m])`, // Canonical query has no extra whitespace
-			expectedBlocked: false,
+			expectedBlockedRange:   false,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "invalid regex pattern - no match",
@@ -214,7 +242,8 @@ blocked_queries:
     regex: true
 `,
 			query:           "rate(metric_counter[5m])",
-			expectedBlocked: false,
+			expectedBlockedRange:   false,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "time range longer than threshold",
@@ -226,7 +255,8 @@ blocked_queries:
 			query:           "up",
 			queryStart:      now.Add(-48 * time.Hour),
 			queryEnd:        now,
-			expectedBlocked: true,
+			expectedBlockedRange:   true,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "time range shorter than longer_than threshold - no match",
@@ -237,7 +267,8 @@ blocked_queries:
 			query:           "up",
 			queryStart:      now.Add(-12 * time.Hour),
 			queryEnd:        now,
-			expectedBlocked: false,
+			expectedBlockedRange:   false,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "time range shorter than threshold",
@@ -249,7 +280,8 @@ blocked_queries:
 			query:           "up",
 			queryStart:      now.Add(-30 * time.Minute),
 			queryEnd:        now,
-			expectedBlocked: true,
+			expectedBlockedRange:   true,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "time range longer than shorter_than threshold - no match",
@@ -260,7 +292,8 @@ blocked_queries:
 			query:           "up",
 			queryStart:      now.Add(-2 * time.Hour),
 			queryEnd:        now,
-			expectedBlocked: false,
+			expectedBlockedRange:   false,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "outside acceptable window - too short",
@@ -273,7 +306,8 @@ blocked_queries:
 			query:           "up",
 			queryStart:      now.Add(-3 * 24 * time.Hour), // 3 days - too short
 			queryEnd:        now,
-			expectedBlocked: true,
+			expectedBlockedRange:   true,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "outside acceptable window - too long",
@@ -286,7 +320,8 @@ blocked_queries:
 			query:           "up",
 			queryStart:      now.Add(-30 * 24 * time.Hour), // 30 days - too long
 			queryEnd:        now,
-			expectedBlocked: true,
+			expectedBlockedRange:   true,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "inside acceptable window (7-21 days) - no match",
@@ -298,7 +333,8 @@ blocked_queries:
 			query:           "up",
 			queryStart:      now.Add(-14 * 24 * time.Hour), // 14 days - in window
 			queryEnd:        now,
-			expectedBlocked: false,
+			expectedBlockedRange:   false,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "inside blocked window (2-3 hours)",
@@ -311,7 +347,8 @@ blocked_queries:
 			query:           "up",
 			queryStart:      now.Add(-150 * time.Minute), // 2.5 hours - inside blocked window
 			queryEnd:        now,
-			expectedBlocked: true,
+			expectedBlockedRange:   true,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "outside blocked window (too short) - no match",
@@ -323,7 +360,8 @@ blocked_queries:
 			query:           "up",
 			queryStart:      now.Add(-90 * time.Minute), // 1.5 hours - too short
 			queryEnd:        now,
-			expectedBlocked: false,
+			expectedBlockedRange:   false,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "outside blocked window (too long) - no match",
@@ -335,7 +373,8 @@ blocked_queries:
 			query:           "up",
 			queryStart:      now.Add(-4 * time.Hour), // 4 hours - too long
 			queryEnd:        now,
-			expectedBlocked: false,
+			expectedBlockedRange:   false,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "pattern matches AND time range outside window",
@@ -349,7 +388,8 @@ blocked_queries:
 			query:           "rate(expensive_metric[5m])",
 			queryStart:      now.Add(-2 * 24 * time.Hour), // 2 days
 			queryEnd:        now,
-			expectedBlocked: true,
+			expectedBlockedRange:   true,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "pattern matches but time range inside window - no match",
@@ -362,7 +402,8 @@ blocked_queries:
 			query:           "rate(expensive_metric[5m])",
 			queryStart:      now.Add(-2 * 24 * time.Hour), // 2 days - under threshold
 			queryEnd:        now,
-			expectedBlocked: false,
+			expectedBlockedRange:   false,
+			expectedBlockedInstant: false,
 		},
 		{
 			name: "time range outside window but pattern doesn't match - no match",
@@ -375,7 +416,8 @@ blocked_queries:
 			query:           "rate(cheap_metric[5m])",
 			queryStart:      now.Add(-10 * 24 * time.Hour), // 10 days - over threshold
 			queryEnd:        now,
-			expectedBlocked: false,
+			expectedBlockedRange:   false,
+			expectedBlockedInstant: false,
 		},
 	}
 
@@ -409,25 +451,12 @@ blocked_queries:
 
 			for reqType, req := range reqs {
 				t.Run(reqType, func(t *testing.T) {
-					// Determine if this test should block for instant queries
-					// Instant queries skip time range checks, so they should only block if there's a pattern-only rule
-					expectBlocked := tt.expectedBlocked
-					if reqType == "instant query" && expectBlocked {
-						// Check if any rule has time range filters (with or without pattern)
-						hasAnyTimeRangeFilter := false
-						for _, block := range limits.blockedQueries {
-							hasTimeRange := block.TimeRangeLongerThan > 0 || block.TimeRangeShorterThan > 0
-							if hasTimeRange {
-								hasAnyTimeRangeFilter = true
-								break
-							}
-						}
-						// Instant queries should not be blocked by any rule that includes time range filters
-						// because time range checks are skipped for instant queries (start == end),
-						// and rules with both pattern + time range require BOTH to match (AND logic)
-						if hasAnyTimeRangeFilter {
-							expectBlocked = false
-						}
+					// Determine expected blocking based on query type
+					var expectBlocked bool
+					if reqType == "instant query" {
+						expectBlocked = tt.expectedBlockedInstant
+					} else {
+						expectBlocked = tt.expectedBlockedRange
 					}
 
 					reg := prometheus.NewPedanticRegistry()
