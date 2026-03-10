@@ -4513,8 +4513,9 @@ The `limits` block configures default and per-tenant limits imposed by component
 # List of queries to block.
 # Example:
 #   The following configuration shows various ways to block queries: by pattern,
-#   by time range, or by combining both. Time range filtering blocks queries
-#   outside the acceptable duration window.
+#   by time range, or by combining both. Setting the pattern to ".*" and regex
+#   to true blocks all queries. Time range filtering blocks queries outside the
+#   acceptable duration window.
 #   blocked_queries:
 #       - pattern: rate(metric_counter[5m])
 #         regex: false
@@ -4540,11 +4541,11 @@ blocked_queries:
     [reason: <string> | default = ""]
 
     # Block queries with time range longer than this duration. Set to 0 to
-    # disable. Supports duration strings like 1d, 1w, 30d.
+    # disable.
     [time_range_longer_than: <int> | default = ]
 
     # Block queries with time range shorter than this duration. Set to 0 to
-    # disable. Supports duration strings like 1m, 5m, 1h.
+    # disable.
     [time_range_shorter_than: <int> | default = ]
 
 # (experimental) List of queries to limit and duration to limit them for.

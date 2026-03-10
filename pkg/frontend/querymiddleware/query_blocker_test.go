@@ -51,8 +51,8 @@ func TestQueryBlockerMiddleware_RangeAndInstantQuery(t *testing.T) {
 		expectedBlockedInstant bool
 	}{
 		{
-			name:            "empty limits",
-			query:           "rate(metric_counter[5m])",
+			name:                   "empty limits",
+			query:                  "rate(metric_counter[5m])",
 			expectedBlockedRange:   false,
 			expectedBlockedInstant: false,
 		},
@@ -63,7 +63,7 @@ blocked_queries:
   - pattern: "rate(metric_counter[5m])"
     regex: false
 `,
-			query:           "rate(metric_counter[5m])",
+			query:                  "rate(metric_counter[5m])",
 			expectedBlockedRange:   true,
 			expectedBlockedInstant: true,
 		},
@@ -74,7 +74,7 @@ blocked_queries:
   - pattern: 'up{pod="test", job="test"}'
     regex: false
 `,
-			query:           `up{job="test",pod="test"}`, // Query has labels in different order
+			query:                  `up{job="test",pod="test"}`, // Query has labels in different order
 			expectedBlockedRange:   true,
 			expectedBlockedInstant: true,
 		},
@@ -85,7 +85,7 @@ blocked_queries:
   - pattern: 'up{ job="test" , pod="test" , }'
     regex: false
 `,
-			query:           `up{job="test",pod="test"}`, // Query is canonical (no extra whitespace/comma)
+			query:                  `up{job="test",pod="test"}`, // Query is canonical (no extra whitespace/comma)
 			expectedBlockedRange:   true,
 			expectedBlockedInstant: true,
 		},
@@ -96,7 +96,7 @@ blocked_queries:
   - pattern: 'rate( metric_counter[ 5m ] )'
     regex: false
 `,
-			query:           `rate(metric_counter[5m])`, // Query is canonical (no extra whitespace)
+			query:                  `rate(metric_counter[5m])`, // Query is canonical (no extra whitespace)
 			expectedBlockedRange:   true,
 			expectedBlockedInstant: true,
 		},
@@ -107,7 +107,7 @@ blocked_queries:
   - pattern: 'sum( rate(metric_counter[5m]) )'
     regex: false
 `,
-			query:           `sum(rate(metric_counter[5m]))`, // Query is canonical (no extra whitespace)
+			query:                  `sum(rate(metric_counter[5m]))`, // Query is canonical (no extra whitespace)
 			expectedBlockedRange:   true,
 			expectedBlockedInstant: true,
 		},
@@ -118,7 +118,7 @@ blocked_queries:
   - pattern: 'sum( rate(metric_counter[5m]) ) by ( job , pod )'
     regex: false
 `,
-			query:           `sum(rate(metric_counter[5m])) by(job,pod)`, // Query is canonical (no extra whitespace)
+			query:                  `sum(rate(metric_counter[5m])) by(job,pod)`, // Query is canonical (no extra whitespace)
 			expectedBlockedRange:   true,
 			expectedBlockedInstant: true,
 		},
@@ -129,7 +129,7 @@ blocked_queries:
   - pattern: 'sum(rate(metric_counter[5m])) by(job,pod)'
     regex: false
 `,
-			query:           `sum(rate(metric_counter[5m])) by(pod,job)`, // Different label order in by()
+			query:                  `sum(rate(metric_counter[5m])) by(pod,job)`, // Different label order in by()
 			expectedBlockedRange:   false,
 			expectedBlockedInstant: false,
 		},
@@ -140,7 +140,7 @@ blocked_queries:
   - pattern: "rate(metric_counter[5m])"
     regex: false
 `,
-			query:           "rate(metric_counter[15m])",
+			query:                  "rate(metric_counter[15m])",
 			expectedBlockedRange:   false,
 			expectedBlockedInstant: false,
 		},
@@ -181,7 +181,7 @@ blocked_queries:
   - pattern: ".*metric_counter.*"
     regex: true
 `,
-			query:           "rate(metric_counter[5m])",
+			query:                  "rate(metric_counter[5m])",
 			expectedBlockedRange:   true,
 			expectedBlockedInstant: true,
 		},
@@ -193,7 +193,7 @@ blocked_queries:
     regex: true
     reason: "all queries are blocked"
 `,
-			query:           "up",
+			query:                  "up",
 			expectedBlockedRange:   true,
 			expectedBlockedInstant: true,
 		},
@@ -219,7 +219,7 @@ blocked_queries:
   - pattern: 'up\{pod="test",job="test"\}'
     regex: true
 `,
-			query:           `up{job="test",pod="test"}`, // Canonical query has different label order
+			query:                  `up{job="test",pod="test"}`, // Canonical query has different label order
 			expectedBlockedRange:   false,
 			expectedBlockedInstant: false,
 		},
@@ -230,7 +230,7 @@ blocked_queries:
   - pattern: 'rate\( metric_counter\[ 5m \] \)'
     regex: true
 `,
-			query:           `rate(metric_counter[5m])`, // Canonical query has no extra whitespace
+			query:                  `rate(metric_counter[5m])`, // Canonical query has no extra whitespace
 			expectedBlockedRange:   false,
 			expectedBlockedInstant: false,
 		},
@@ -241,7 +241,7 @@ blocked_queries:
   - pattern: "[a-9}"
     regex: true
 `,
-			query:           "rate(metric_counter[5m])",
+			query:                  "rate(metric_counter[5m])",
 			expectedBlockedRange:   false,
 			expectedBlockedInstant: false,
 		},
@@ -252,9 +252,9 @@ blocked_queries:
   - time_range_longer_than: "24h"
     reason: "queries longer than 1 day are not allowed"
 `,
-			query:           "up",
-			queryStart:      now.Add(-48 * time.Hour),
-			queryEnd:        now,
+			query:                  "up",
+			queryStart:             now.Add(-48 * time.Hour),
+			queryEnd:               now,
 			expectedBlockedRange:   true,
 			expectedBlockedInstant: false,
 		},
@@ -264,9 +264,9 @@ blocked_queries:
 blocked_queries:
   - time_range_longer_than: "24h"
 `,
-			query:           "up",
-			queryStart:      now.Add(-12 * time.Hour),
-			queryEnd:        now,
+			query:                  "up",
+			queryStart:             now.Add(-12 * time.Hour),
+			queryEnd:               now,
 			expectedBlockedRange:   false,
 			expectedBlockedInstant: false,
 		},
@@ -277,9 +277,9 @@ blocked_queries:
   - time_range_shorter_than: "1h"
     reason: "queries shorter than 1 hour are not useful"
 `,
-			query:           "up",
-			queryStart:      now.Add(-30 * time.Minute),
-			queryEnd:        now,
+			query:                  "up",
+			queryStart:             now.Add(-30 * time.Minute),
+			queryEnd:               now,
 			expectedBlockedRange:   true,
 			expectedBlockedInstant: false,
 		},
@@ -289,9 +289,9 @@ blocked_queries:
 blocked_queries:
   - time_range_shorter_than: "1h"
 `,
-			query:           "up",
-			queryStart:      now.Add(-2 * time.Hour),
-			queryEnd:        now,
+			query:                  "up",
+			queryStart:             now.Add(-2 * time.Hour),
+			queryEnd:               now,
 			expectedBlockedRange:   false,
 			expectedBlockedInstant: false,
 		},
@@ -303,9 +303,9 @@ blocked_queries:
     time_range_shorter_than: "168h"
     reason: "queries must be between 7 and 21 days"
 `,
-			query:           "up",
-			queryStart:      now.Add(-3 * 24 * time.Hour), // 3 days - too short
-			queryEnd:        now,
+			query:                  "up",
+			queryStart:             now.Add(-3 * 24 * time.Hour), // 3 days - too short
+			queryEnd:               now,
 			expectedBlockedRange:   true,
 			expectedBlockedInstant: false,
 		},
@@ -317,9 +317,9 @@ blocked_queries:
     time_range_shorter_than: "168h"
     reason: "queries must be between 7 and 21 days"
 `,
-			query:           "up",
-			queryStart:      now.Add(-30 * 24 * time.Hour), // 30 days - too long
-			queryEnd:        now,
+			query:                  "up",
+			queryStart:             now.Add(-30 * 24 * time.Hour), // 30 days - too long
+			queryEnd:               now,
 			expectedBlockedRange:   true,
 			expectedBlockedInstant: false,
 		},
@@ -330,9 +330,9 @@ blocked_queries:
   - time_range_longer_than: "504h"
     time_range_shorter_than: "168h"
 `,
-			query:           "up",
-			queryStart:      now.Add(-14 * 24 * time.Hour), // 14 days - in window
-			queryEnd:        now,
+			query:                  "up",
+			queryStart:             now.Add(-14 * 24 * time.Hour), // 14 days - in window
+			queryEnd:               now,
 			expectedBlockedRange:   false,
 			expectedBlockedInstant: false,
 		},
@@ -344,9 +344,9 @@ blocked_queries:
     time_range_longer_than: "2h"
     reason: "queries between 2 and 3 hours are blocked"
 `,
-			query:           "up",
-			queryStart:      now.Add(-150 * time.Minute), // 2.5 hours - inside blocked window
-			queryEnd:        now,
+			query:                  "up",
+			queryStart:             now.Add(-150 * time.Minute), // 2.5 hours - inside blocked window
+			queryEnd:               now,
 			expectedBlockedRange:   true,
 			expectedBlockedInstant: false,
 		},
@@ -357,9 +357,9 @@ blocked_queries:
   - time_range_shorter_than: "3h"
     time_range_longer_than: "2h"
 `,
-			query:           "up",
-			queryStart:      now.Add(-90 * time.Minute), // 1.5 hours - too short
-			queryEnd:        now,
+			query:                  "up",
+			queryStart:             now.Add(-90 * time.Minute), // 1.5 hours - too short
+			queryEnd:               now,
 			expectedBlockedRange:   false,
 			expectedBlockedInstant: false,
 		},
@@ -370,9 +370,9 @@ blocked_queries:
   - time_range_shorter_than: "3h"
     time_range_longer_than: "2h"
 `,
-			query:           "up",
-			queryStart:      now.Add(-4 * time.Hour), // 4 hours - too long
-			queryEnd:        now,
+			query:                  "up",
+			queryStart:             now.Add(-4 * time.Hour), // 4 hours - too long
+			queryEnd:               now,
 			expectedBlockedRange:   false,
 			expectedBlockedInstant: false,
 		},
@@ -385,9 +385,9 @@ blocked_queries:
     time_range_longer_than: "24h"
     reason: "expensive queries over 1 day are blocked"
 `,
-			query:           "rate(expensive_metric[5m])",
-			queryStart:      now.Add(-2 * 24 * time.Hour), // 2 days
-			queryEnd:        now,
+			query:                  "rate(expensive_metric[5m])",
+			queryStart:             now.Add(-2 * 24 * time.Hour), // 2 days
+			queryEnd:               now,
 			expectedBlockedRange:   true,
 			expectedBlockedInstant: false,
 		},
@@ -399,9 +399,9 @@ blocked_queries:
     regex: true
     time_range_longer_than: "168h"
 `,
-			query:           "rate(expensive_metric[5m])",
-			queryStart:      now.Add(-2 * 24 * time.Hour), // 2 days - under threshold
-			queryEnd:        now,
+			query:                  "rate(expensive_metric[5m])",
+			queryStart:             now.Add(-2 * 24 * time.Hour), // 2 days - under threshold
+			queryEnd:               now,
 			expectedBlockedRange:   false,
 			expectedBlockedInstant: false,
 		},
@@ -413,9 +413,9 @@ blocked_queries:
     regex: true
     time_range_longer_than: "168h"
 `,
-			query:           "rate(cheap_metric[5m])",
-			queryStart:      now.Add(-10 * 24 * time.Hour), // 10 days - over threshold
-			queryEnd:        now,
+			query:                  "rate(cheap_metric[5m])",
+			queryStart:             now.Add(-10 * 24 * time.Hour), // 10 days - over threshold
+			queryEnd:               now,
 			expectedBlockedRange:   false,
 			expectedBlockedInstant: false,
 		},
@@ -428,7 +428,7 @@ blocked_queries:
 				limits.blockedQueries = parseBlockedQueriesYAML(t, tt.limitsYAML)
 			}
 
-			// Set default times if not specified
+			// Set default times for range queries if not specified
 			start := tt.queryStart
 			end := tt.queryEnd
 			if start.IsZero() {
@@ -451,7 +451,6 @@ blocked_queries:
 
 			for reqType, req := range reqs {
 				t.Run(reqType, func(t *testing.T) {
-					// Determine expected blocking based on query type
 					var expectBlocked bool
 					if reqType == "instant query" {
 						expectBlocked = tt.expectedBlockedInstant

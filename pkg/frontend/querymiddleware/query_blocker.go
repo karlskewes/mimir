@@ -57,34 +57,28 @@ func (qb *queryBlockerMiddleware) isBlocked(tenant string, req MetricsQueryReque
 	if len(blocks) <= 0 {
 		return false, ""
 	}
-	logger := log.With(qb.logger, "user", tenant)
 
-	query := req.GetQuery()
-
-	// Calculate query time range duration for range queries
-	// For instant queries, this will be 0 (start == end)
-	queryDurationMs := req.GetEnd() - req.GetStart()
-	queryDuration := time.Duration(queryDurationMs) * time.Millisecond
-	isInstantQuery := queryDurationMs == 0
+	var (
+		logger          = log.With(qb.logger, "user", tenant)
+		query           = req.GetQuery()
+		queryDurationMs = req.GetEnd() - req.GetStart()
+		queryDuration   = time.Duration(queryDurationMs) * time.Millisecond
+		isInstantQuery  = queryDurationMs == 0
+	)
 
 	for ruleIndex, block := range blocks {
-		// Determine if this rule should check patterns, time ranges, or both
 		hasPatternCheck := strings.TrimSpace(block.Pattern) != ""
 		hasShorterThan := block.TimeRangeShorterThan > 0
 		hasLongerThan := block.TimeRangeLongerThan > 0
 		hasTimeRangeCheck := hasShorterThan || hasLongerThan
 
-		// If neither check is configured, skip this rule
 		if !hasPatternCheck && !hasTimeRangeCheck {
 			continue
 		}
 
-		// Check pattern matching (if configured)
 		patternMatches := false
 		if hasPatternCheck {
-			if strings.TrimSpace(block.Pattern) == strings.TrimSpace(query) {
-				patternMatches = true
-			} else if block.Regex {
+			if block.Regex {
 				r, err := labels.NewFastRegexMatcher(block.Pattern)
 				if err != nil {
 					level.Error(logger).Log("msg", "query blocker regex does not compile, ignoring query blocker", "pattern", block.Pattern, "err", err, "index", ruleIndex)
@@ -93,10 +87,13 @@ func (qb *queryBlockerMiddleware) isBlocked(tenant string, req MetricsQueryReque
 				if r.MatchString(query) {
 					patternMatches = true
 				}
+			} else {
+				if strings.TrimSpace(block.Pattern) == strings.TrimSpace(query) {
+					patternMatches = true
+				}
 			}
 		}
 
-		// Check time range filtering (if configured and not an instant query)
 		timeRangeViolation := false
 		timeRangePosition := ""
 		if hasTimeRangeCheck && !isInstantQuery {

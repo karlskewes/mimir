@@ -62,7 +62,7 @@ overrides:
 ### Time range filtering details
 
 - **Duration format**: Supports Prometheus duration strings: `ms`, `s`, `m`, `h`, `d`, `w`, `y`
-  - Examples: `5m`, `1h`, `24h`, `7d`, `168h`
+  - Examples: `5m`, `1h`, `24h`, `7d`, `2w`
 - **Query time range**: The time range is calculated as `end - start` from the query parameters
 - **Instant queries**: Time range filtering is automatically skipped for instant queries since they query a single point in time
 - **Optional fields**: Both `time_range_longer_than` and `time_range_shorter_than` are optional. You can use one, both, or neither
