@@ -15,6 +15,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -211,6 +212,10 @@ type enqueueResult struct {
 	schedulerErr string
 
 	cancelCh chan<- uint64 // Channel that can be used for request cancellation. If nil, cancellation is not possible.
+
+	// Address of the query-scheduler which produced this result, used to avoid retrying a request
+	// on a scheduler which has already been tried.
+	schedulerAddress string
 }
 
 // NewFrontend creates a new frontend.
@@ -685,7 +690,170 @@ func (s *ProtobufResponseStream) Close() {
 	}
 }
 
+const (
+	enqueueRetryReasonTooManyRequests = "too_many_requests"
+	enqueueRetryReasonFailed          = "failed"
+
+	enqueueRetryActionRetried   = "retried"
+	enqueueRetryActionExhausted = "exhausted"
+)
+
 func (f *Frontend) enqueueRequestWithRetries(ctx context.Context, freq *frontendRequest) (chan<- uint64, error) {
+	if f.cfg.EnqueueRetryEnabled {
+		return f.enqueueRequestRetryingUntriedSchedulers(ctx, freq)
+	}
+
+	return f.enqueueRequestRetryingSharedChannel(ctx, freq)
+}
+
+// enqueueRequestRetryingUntriedSchedulers enqueues a request, retrying it on query-schedulers which
+// have not rejected it yet. Only the first attempt uses the channel shared by all schedulers, so the
+// happy path keeps its work stealing, and the behaviour with no schedulers connected is unchanged.
+func (f *Frontend) enqueueRequestRetryingUntriedSchedulers(ctx context.Context, freq *frontendRequest) (chan<- uint64, error) {
+	var tried []string
+	sawTooManyRequests := false
+
+	freq.spanLogger.DebugLog("msg", "enqueuing request")
+
+	select {
+	case <-ctx.Done():
+		freq.spanLogger.DebugLog("msg", "request context cancelled while enqueuing request, aborting", "cause", context.Cause(ctx))
+		return nil, context.Cause(ctx)
+
+	case f.requestsCh <- freq:
+	}
+
+	for {
+		// Every path through enqueueRequest writes exactly one result, and a completed send above or
+		// below means a worker holds the request, so this read always pairs with an attempt.
+		enqRes := <-freq.enqueue
+
+		var reason string
+
+		switch enqRes.status {
+		case waitForResponse:
+			// Succeeded, go wait for response from querier.
+			return enqRes.cancelCh, nil
+
+		case failed:
+			if enqRes.clientErr != nil {
+				// It failed because of a client error. No need to retry.
+				return nil, httpgrpc.Errorf(http.StatusBadRequest, "failed to enqueue request: %s", enqRes.clientErr.Error())
+			}
+			reason = enqueueRetryReasonFailed
+
+		case schedulerReturnedError:
+			// An explicit scheduler error is not a statement about capacity, so it is reported even
+			// when another scheduler already replied that it had too many requests.
+			return f.enqueueSchedulerErrorResult(freq, enqRes.schedulerErr)
+
+		case tooManyRequests:
+			sawTooManyRequests = true
+			reason = enqueueRetryReasonTooManyRequests
+		}
+
+		tried = append(tried, enqRes.schedulerAddress)
+
+		// Hand the request to a scheduler we have not tried. Schedulers can be removed between
+		// taking the snapshot and sending, so keep going until one takes it or none are left.
+		sent := false
+		for !sent {
+			next, ok := untriedSchedulerAddress(f.schedulerWorkers.getSchedulerAddresses(), tried)
+			if !ok {
+				break
+			}
+
+			var err error
+			if sent, err = f.schedulerWorkers.sendRequestToScheduler(ctx, next, freq); err != nil {
+				freq.spanLogger.DebugLog("msg", "request context cancelled while retrying request, aborting", "cause", err)
+				return nil, err
+			}
+
+			if !sent {
+				// The scheduler went away before it could take the request.
+				tried = append(tried, next)
+			}
+		}
+
+		action := enqueueRetryActionRetried
+		if !sent {
+			action = enqueueRetryActionExhausted
+		}
+		f.schedulerWorkers.recordEnqueueRetry(enqRes.schedulerAddress, reason, action)
+
+		if !sent {
+			break
+		}
+
+		freq.spanLogger.DebugLog("msg", "retrying request on another scheduler", "rejected_by", enqRes.schedulerAddress, "reason", reason)
+	}
+
+	freq.spanLogger.DebugLog("msg", "enqueuing request failed on every scheduler, aborting", "saw_too_many_requests", sawTooManyRequests)
+
+	// A remembered rejection for being over the per-tenant queue limit must not be reported as an
+	// internal error, otherwise clients lose the signal to back off.
+	if sawTooManyRequests {
+		return f.enqueueTooManyRequestsResult(freq)
+	}
+
+	return f.enqueueFailedResult(freq)
+}
+
+// untriedSchedulerAddress returns an address from addresses which is not in tried.
+func untriedSchedulerAddress(addresses, tried []string) (string, bool) {
+	for _, address := range addresses {
+		if !slices.Contains(tried, address) {
+			return address, true
+		}
+	}
+
+	return "", false
+}
+
+func (f *Frontend) enqueueSchedulerErrorResult(freq *frontendRequest, schedulerErr string) (chan<- uint64, error) {
+	if freq.httpRequest != nil {
+		freq.httpResponse <- queryResultWithBody{
+			queryResult: &frontendv2pb.QueryResultRequest{
+				HttpResponse: &httpgrpc.HTTPResponse{
+					Code: http.StatusInternalServerError,
+					Body: []byte(schedulerErr),
+				},
+			}}
+
+		return nil, nil
+	}
+
+	return nil, apierror.New(apierror.TypeInternal, schedulerErr)
+}
+
+func (f *Frontend) enqueueTooManyRequestsResult(freq *frontendRequest) (chan<- uint64, error) {
+	if freq.httpRequest != nil {
+		freq.httpResponse <- queryResultWithBody{
+			queryResult: &frontendv2pb.QueryResultRequest{
+				HttpResponse: &httpgrpc.HTTPResponse{
+					Code: http.StatusTooManyRequests,
+					Body: []byte("too many outstanding requests"),
+				},
+			}}
+
+		return nil, nil
+	}
+
+	return nil, apierror.New(apierror.TypeTooManyRequests, "too many outstanding requests")
+}
+
+func (f *Frontend) enqueueFailedResult(freq *frontendRequest) (chan<- uint64, error) {
+	if freq.httpRequest != nil {
+		return nil, httpgrpc.Errorf(http.StatusInternalServerError, "failed to enqueue request")
+	}
+
+	return nil, apierror.New(apierror.TypeInternal, "failed to enqueue request")
+}
+
+// enqueueRequestRetryingSharedChannel is the behaviour used when enqueue retries are disabled. It
+// only ever uses the shared channel, and relies on a failing scheduler's workers being removed from
+// that channel by their backoff to reach a different scheduler.
+func (f *Frontend) enqueueRequestRetryingSharedChannel(ctx context.Context, freq *frontendRequest) (chan<- uint64, error) {
 	maxAttempts := f.cfg.WorkerConcurrency + 1 // To make sure we hit at least two different schedulers.
 
 	for attempt := range maxAttempts {
@@ -711,33 +879,10 @@ func (f *Frontend) enqueueRequestWithRetries(ctx context.Context, freq *frontend
 				}
 
 			case schedulerReturnedError:
-				if freq.httpRequest != nil {
-					freq.httpResponse <- queryResultWithBody{
-						queryResult: &frontendv2pb.QueryResultRequest{
-							HttpResponse: &httpgrpc.HTTPResponse{
-								Code: http.StatusInternalServerError,
-								Body: []byte(enqRes.schedulerErr),
-							},
-						}}
-
-					return nil, nil
-				}
-
-				return nil, apierror.New(apierror.TypeInternal, enqRes.schedulerErr)
+				return f.enqueueSchedulerErrorResult(freq, enqRes.schedulerErr)
 
 			case tooManyRequests:
-				if freq.httpRequest != nil {
-					freq.httpResponse <- queryResultWithBody{
-						queryResult: &frontendv2pb.QueryResultRequest{
-							HttpResponse: &httpgrpc.HTTPResponse{
-								Code: http.StatusTooManyRequests,
-								Body: []byte("too many outstanding requests"),
-							},
-						}}
-					return nil, nil
-				}
-
-				return nil, apierror.New(apierror.TypeTooManyRequests, "too many outstanding requests")
+				return f.enqueueTooManyRequestsResult(freq)
 			}
 
 			// If we get to here, then the enqueue failed, so loop around and start another attempt if we can.
@@ -746,11 +891,7 @@ func (f *Frontend) enqueueRequestWithRetries(ctx context.Context, freq *frontend
 
 	freq.spanLogger.DebugLog("msg", "enqueuing request failed, retries are exhausted, aborting")
 
-	if freq.httpRequest != nil {
-		return nil, httpgrpc.Errorf(http.StatusInternalServerError, "failed to enqueue request")
-	}
-
-	return nil, apierror.New(apierror.TypeInternal, "failed to enqueue request")
+	return f.enqueueFailedResult(freq)
 }
 
 type cleanupReadCloser struct {

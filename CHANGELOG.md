@@ -7,6 +7,7 @@
 * [CHANGE] MQE: validate that delayed name removal is only set using `-querier.enable-delayed-name-removal` or the per-tenant setting when MQE is in use. #16207
 * [ENHANCEMENT] Compactor: Add the experimental `-compactor.block-health-validation-concurrency` option to limit how many blocks are validated concurrently within a compaction job. #16269
 * [ENHANCEMENT] Distributor: Add the experimental `cortex_distributor_otlp_requests_with_job_or_instance_resource_attribute_total{user}` counter to track OTLP requests carrying `job` or `instance` as a resource attribute. #16285
+* [ENHANCEMENT] Query-frontend: Add the experimental `-query-frontend.scheduler-enqueue-retry-enabled` option. When enabled, a query rejected by a query-scheduler because the per-tenant queue is full is retried on another query-scheduler which has not been tried yet, and HTTP 429 is only returned to the client once every query-scheduler has rejected it. Adds the `cortex_query_frontend_enqueue_retries_total` counter. #16301
 * [BUGFIX] Query-frontend: Return a HTTP 500 error rather than a HTTP 400 when a querier receives a query plan that is too new. #16233
 * [BUGFIX] Compactor, Store-gateway: Fix the store-gateway always logging `num_series=0` in its `loaded new block` message. #16276
 
