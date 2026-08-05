@@ -149,6 +149,93 @@ func setupFrontendWithConcurrencyAndServerOptions(t testing.TB, reg prometheus.R
 	return f, ms
 }
 
+// setupFrontendWithSchedulers starts a frontend connected to one mock scheduler per reply function.
+// The first scheduler is found through the frontend's configured scheduler address. The others are
+// registered directly, because DNS resolution of a single address cannot yield multiple instances.
+func setupFrontendWithSchedulers(t testing.TB, enqueueRetryEnabled bool, replyFuncs ...func(f *Frontend, msg *schedulerpb.FrontendToScheduler) *schedulerpb.SchedulerToFrontend) (*Frontend, []*mockScheduler) {
+	require.NotEmpty(t, replyFuncs)
+
+	frontendListener, err := net.Listen("tcp", "localhost:0")
+	require.NoError(t, err)
+
+	schedulerListeners := make([]net.Listener, len(replyFuncs))
+	for i := range schedulerListeners {
+		schedulerListeners[i], err = net.Listen("tcp", "localhost:0")
+		require.NoError(t, err)
+	}
+
+	frontendHost, frontendPort, err := net.SplitHostPort(frontendListener.Addr().String())
+	require.NoError(t, err)
+
+	grpcPort, err := strconv.Atoi(frontendPort)
+	require.NoError(t, err)
+
+	cfg := Config{}
+	flagext.DefaultValues(&cfg)
+	cfg.SchedulerAddress = schedulerListeners[0].Addr().String()
+	cfg.WorkerConcurrency = testFrontendWorkerConcurrency
+	cfg.EnqueueRetryEnabled = enqueueRetryEnabled
+	cfg.Addr = frontendHost
+	cfg.Port = grpcPort
+	cfg.QueryStoreAfter = 12 * time.Hour
+
+	f, err := NewFrontend(cfg, limits{queryIngestersWithin: 13 * time.Hour}, log.NewLogfmtLogger(os.Stdout), nil, newTestCodec())
+	require.NoError(t, err)
+
+	frontendServer := grpc.NewServer(
+		grpc.StreamInterceptor(middleware.StreamServerUserHeaderInterceptor),
+		grpc.UnaryInterceptor(middleware.ServerUserHeaderInterceptor),
+	)
+	frontendv2pb.RegisterFrontendForQuerierServer(frontendServer, f)
+
+	go func() {
+		_ = frontendServer.Serve(frontendListener)
+	}()
+
+	t.Cleanup(func() {
+		_ = frontendListener.Close()
+		frontendServer.GracefulStop()
+	})
+
+	schedulers := make([]*mockScheduler, len(replyFuncs))
+	for i, replyFunc := range replyFuncs {
+		schedulerServer := grpc.NewServer()
+		schedulers[i] = newMockScheduler(t, f, replyFunc)
+		schedulerpb.RegisterSchedulerForFrontendServer(schedulerServer, schedulers[i])
+
+		listener := schedulerListeners[i]
+		go func() {
+			_ = schedulerServer.Serve(listener)
+		}()
+
+		t.Cleanup(func() {
+			_ = listener.Close()
+			schedulerServer.GracefulStop()
+		})
+	}
+
+	require.NoError(t, services.StartAndAwaitRunning(context.Background(), f))
+	t.Cleanup(func() {
+		_ = services.StopAndAwaitTerminated(context.Background(), f)
+	})
+
+	for _, listener := range schedulerListeners[1:] {
+		f.schedulerWorkers.InstanceAdded(servicediscovery.Instance{Address: listener.Addr().String(), InUse: true})
+	}
+
+	// Wait for the frontend to connect to every scheduler.
+	for _, ms := range schedulers {
+		test.Poll(t, 1*time.Second, 1, func() interface{} {
+			ms.mu.Lock()
+			defer ms.mu.Unlock()
+
+			return len(ms.frontendAddr)
+		})
+	}
+
+	return f, schedulers
+}
+
 func sendResponseWithDelay(f *Frontend, delay time.Duration, userID string, queryID uint64, resp *httpgrpc.HTTPResponse) error {
 	if delay > 0 {
 		time.Sleep(delay)
@@ -815,6 +902,128 @@ func TestFrontend_Protobuf_TooManyRequests(t *testing.T) {
 	require.Nil(t, msg)
 
 	require.Equal(t, int64(1), schedulerEnqueueAttempts.Load(), "should not retry on 'too many outstanding requests' error")
+}
+
+func TestFrontend_HTTPGRPC_EnqueueRetriedOnAnotherScheduler(t *testing.T) {
+	const userID = "test"
+	const body = "hello world"
+
+	// Reject the first enqueue attempt whichever scheduler receives it, so only a retry on the
+	// other scheduler can make the query succeed. Attempt 0 races between both schedulers' workers,
+	// so the rejection cannot be pinned to a specific scheduler up front.
+	firstAttempt := atomic.NewBool(true)
+	reply := func(f *Frontend, msg *schedulerpb.FrontendToScheduler) *schedulerpb.SchedulerToFrontend {
+		if msg.Type != schedulerpb.ENQUEUE {
+			return &schedulerpb.SchedulerToFrontend{Status: schedulerpb.ERROR, Error: fmt.Sprintf("unexpected message type %v sent to scheduler", msg.Type)}
+		}
+
+		if firstAttempt.CompareAndSwap(true, false) {
+			return &schedulerpb.SchedulerToFrontend{Status: schedulerpb.TOO_MANY_REQUESTS_PER_TENANT}
+		}
+
+		go func() {
+			_ = sendResponseWithDelay(f, 100*time.Millisecond, userID, msg.QueryID, &httpgrpc.HTTPResponse{
+				Code: 200,
+				Body: []byte(body),
+			})
+		}()
+
+		return &schedulerpb.SchedulerToFrontend{Status: schedulerpb.OK}
+	}
+
+	f, schedulers := setupFrontendWithSchedulers(t, true, reply, reply)
+
+	req := &httpgrpc.HTTPRequest{
+		Url: "/api/v1/query_range?start=946684800&end=946771200&step=60&query=up{}",
+	}
+	resp, _, err := f.RoundTripGRPC(user.InjectOrgID(context.Background(), userID), req)
+	require.NoError(t, err)
+	require.Equal(t, int32(200), resp.Code)
+	require.Equal(t, []byte(body), resp.Body)
+
+	// Exactly one attempt per scheduler: the rejection, then the retry elsewhere.
+	require.Equal(t, 1, schedulers[0].enqueueCount(), "each scheduler should have been tried exactly once")
+	require.Equal(t, 1, schedulers[1].enqueueCount(), "each scheduler should have been tried exactly once")
+}
+
+func TestFrontend_HTTPGRPC_EnqueueRetryExhaustedReturnsTooManyRequests(t *testing.T) {
+	// Every scheduler is full, so the client must still see a 429 rather than the 500 returned by
+	// the retries-exhausted path.
+	reply := func(*Frontend, *schedulerpb.FrontendToScheduler) *schedulerpb.SchedulerToFrontend {
+		return &schedulerpb.SchedulerToFrontend{Status: schedulerpb.TOO_MANY_REQUESTS_PER_TENANT}
+	}
+
+	f, schedulers := setupFrontendWithSchedulers(t, true, reply, reply)
+
+	req := &httpgrpc.HTTPRequest{
+		Url: "/api/v1/query_range?start=946684800&end=946771200&step=60&query=up{}",
+	}
+	resp, _, err := f.RoundTripGRPC(user.InjectOrgID(context.Background(), "test"), req)
+	require.NoError(t, err)
+	require.Equal(t, int32(http.StatusTooManyRequests), resp.Code)
+
+	require.Equal(t, 1, schedulers[0].enqueueCount(), "should try each scheduler exactly once before giving up")
+	require.Equal(t, 1, schedulers[1].enqueueCount(), "should try each scheduler exactly once before giving up")
+}
+
+func TestFrontend_HTTPGRPC_EnqueueRetryMixedFailureReturnsTooManyRequests(t *testing.T) {
+	// One scheduler is full and the other is shutting down, which the frontend sees as a transport
+	// failure. A remembered 429 must win over the retries-exhausted 500 regardless of which
+	// scheduler receives the first attempt.
+	tooManyRequests := func(*Frontend, *schedulerpb.FrontendToScheduler) *schedulerpb.SchedulerToFrontend {
+		return &schedulerpb.SchedulerToFrontend{Status: schedulerpb.TOO_MANY_REQUESTS_PER_TENANT}
+	}
+	shuttingDown := func(*Frontend, *schedulerpb.FrontendToScheduler) *schedulerpb.SchedulerToFrontend {
+		return &schedulerpb.SchedulerToFrontend{Status: schedulerpb.SHUTTING_DOWN}
+	}
+
+	f, _ := setupFrontendWithSchedulers(t, true, tooManyRequests, shuttingDown)
+
+	req := &httpgrpc.HTTPRequest{
+		Url: "/api/v1/query_range?start=946684800&end=946771200&step=60&query=up{}",
+	}
+	resp, _, err := f.RoundTripGRPC(user.InjectOrgID(context.Background(), "test"), req)
+	require.NoError(t, err)
+	require.Equal(t, int32(http.StatusTooManyRequests), resp.Code)
+}
+
+func TestFrontend_Protobuf_EnqueueRetryExhaustedReturnsTooManyRequests(t *testing.T) {
+	reply := func(*Frontend, *schedulerpb.FrontendToScheduler) *schedulerpb.SchedulerToFrontend {
+		return &schedulerpb.SchedulerToFrontend{Status: schedulerpb.TOO_MANY_REQUESTS_PER_TENANT}
+	}
+
+	f, _ := setupFrontendWithSchedulers(t, true, reply, reply)
+
+	ctx := user.InjectOrgID(context.Background(), "test")
+	ctx = querymiddleware.ContextWithParallelismLimiter(ctx, querymiddleware.NewParallelismLimiter(math.MaxInt))
+	resp, err := f.DoProtobufRequest(ctx, &querierpb.EvaluateQueryRequest{}, time.Now(), time.Now())
+	require.NoError(t, err)
+	defer resp.Close()
+
+	msg, err := resp.Next(ctx)
+	require.Equal(t, apierror.New(apierror.TypeTooManyRequests, "too many outstanding requests"), err)
+	require.Nil(t, msg)
+}
+
+func TestFrontend_HTTPGRPC_EnqueueRetryDisabledDoesNotRetry(t *testing.T) {
+	// With the feature disabled the frontend must return the 429 from the first attempt without
+	// trying the other scheduler.
+	enqueueAttempts := atomic.NewInt64(0)
+	reply := func(*Frontend, *schedulerpb.FrontendToScheduler) *schedulerpb.SchedulerToFrontend {
+		enqueueAttempts.Inc()
+		return &schedulerpb.SchedulerToFrontend{Status: schedulerpb.TOO_MANY_REQUESTS_PER_TENANT}
+	}
+
+	f, _ := setupFrontendWithSchedulers(t, false, reply, reply)
+
+	req := &httpgrpc.HTTPRequest{
+		Url: "/api/v1/query_range?start=946684800&end=946771200&step=60&query=up{}",
+	}
+	resp, _, err := f.RoundTripGRPC(user.InjectOrgID(context.Background(), "test"), req)
+	require.NoError(t, err)
+	require.Equal(t, int32(http.StatusTooManyRequests), resp.Code)
+
+	require.Equal(t, int64(1), enqueueAttempts.Load(), "should not retry when enqueue retry is disabled")
 }
 
 func TestFrontend_HTTPGRPC_SchedulerError(t *testing.T) {
@@ -1806,6 +2015,20 @@ type mockScheduler struct {
 
 func newMockScheduler(t testing.TB, f *Frontend, replyFunc func(f *Frontend, msg *schedulerpb.FrontendToScheduler) *schedulerpb.SchedulerToFrontend) *mockScheduler {
 	return &mockScheduler{t: t, f: f, frontendAddr: map[string]int{}, replyFunc: replyFunc}
+}
+
+// enqueueCount returns how many ENQUEUE messages this scheduler received.
+func (m *mockScheduler) enqueueCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	count := 0
+	for _, msg := range m.msgs {
+		if msg.Type == schedulerpb.ENQUEUE {
+			count++
+		}
+	}
+	return count
 }
 
 func (m *mockScheduler) checkWithLock(fn func()) {
