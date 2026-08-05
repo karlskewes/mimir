@@ -2953,6 +2953,8 @@ Usage of ./cmd/mimir/mimir:
     	Address of the query-scheduler component, in host:port format. The host should resolve to all query-scheduler instances. This option should be set only when query-scheduler component is in use and -query-scheduler.service-discovery-mode is set to 'dns'.
   -query-frontend.scheduler-dns-lookup-period duration
     	How often to resolve the scheduler-address, in order to look for new query-scheduler instances. (default 10s)
+  -query-frontend.scheduler-enqueue-retry-enabled
+    	[experimental] If enabled, when a query-scheduler rejects a query because its per-tenant queue is full, retry enqueuing the query on another query-scheduler which has not been tried yet.
   -query-frontend.scheduler-worker-concurrency int
     	Number of concurrent workers forwarding queries to single query-scheduler. (default 5)
   -query-frontend.split-queries-by-interval duration

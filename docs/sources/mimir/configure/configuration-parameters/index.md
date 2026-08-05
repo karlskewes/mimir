@@ -2309,6 +2309,12 @@ The `frontend` block configures the query-frontend.
 # CLI flag: -query-frontend.scheduler-worker-concurrency
 [scheduler_worker_concurrency: <int> | default = 5]
 
+# (experimental) If enabled, when a query-scheduler rejects a query because its
+# per-tenant queue is full, retry enqueuing the query on another query-scheduler
+# which has not been tried yet.
+# CLI flag: -query-frontend.scheduler-enqueue-retry-enabled
+[scheduler_enqueue_retry_enabled: <boolean> | default = false]
+
 # Configures the gRPC client used to communicate between the query-frontends and
 # the query-schedulers.
 # The CLI flags prefix for this block configuration is:

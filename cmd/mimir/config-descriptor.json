@@ -8309,6 +8309,17 @@
           "fieldCategory": "advanced"
         },
         {
+          "kind": "field",
+          "name": "scheduler_enqueue_retry_enabled",
+          "required": false,
+          "desc": "If enabled, when a query-scheduler rejects a query because its per-tenant queue is full, retry enqueuing the query on another query-scheduler which has not been tried yet.",
+          "fieldValue": null,
+          "fieldDefaultValue": false,
+          "fieldFlag": "query-frontend.scheduler-enqueue-retry-enabled",
+          "fieldType": "boolean",
+          "fieldCategory": "experimental"
+        },
+        {
           "kind": "block",
           "name": "grpc_client_config",
           "required": false,
