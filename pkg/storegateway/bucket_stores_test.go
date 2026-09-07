@@ -6,12 +6,15 @@
 package storegateway
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -662,6 +665,152 @@ func TestBucketStore_Series_ShouldQueryBlockWithOutOfOrderChunks(t *testing.T) {
 
 func promLabels(m *storeTestSeries) labels.Labels {
 	return mimirpb.FromLabelAdaptersToLabels(m.Labels)
+}
+
+// TestBucketStore_Series_IgnoreDeletionMarkAging generates several Level-1 blocks (mimicking many
+// small raw blocks from different sources covering the same time range) plus one Level-2 block
+// covering the same range (the "already compacted" replacement), marks each Level-1 block for
+// deletion at a different simulated age, and checks via a real Series() call which blocks are
+// still served at each age relative to the store-gateway-side IgnoreDeletionMarksInStoreGatewayDelay
+// (production default 1h).
+func TestBucketStore_Series_IgnoreDeletionMarkAging(t *testing.T) {
+	const (
+		userID     = "user-1"
+		metricName = "test"
+	)
+
+	// Small synthetic timestamps, not real wall-clock based, so blocks aren't dropped by the
+	// unrelated IgnoreBlocksWithin filter (excludes blocks whose MinTime isn't more than its
+	// configured duration, 10h by default, before real time.Now()).
+	const blockMinT, blockMaxT, step = 0, 10000, 100
+
+	ages := []struct {
+		name string
+		age  time.Duration
+	}{
+		{"10m", 10 * time.Minute},
+		{"20m", 20 * time.Minute},
+		{"30m", 30 * time.Minute},
+		{"33m", 33 * time.Minute},
+		{"40m", 40 * time.Minute},
+		{"50m", 50 * time.Minute},
+		{"60m", 60 * time.Minute},
+		{"70m", 70 * time.Minute},
+	}
+
+	ctx := context.Background()
+	cfg := prepareStorageConfig(t)
+	storageDir := t.TempDir()
+
+	bkt, err := filesystem.NewBucketClient(filesystem.Config{Directory: storageDir})
+	require.NoError(t, err)
+	// Deletion marks are discovered by the bucket index updater via the global markers
+	// convention (markers/<id>-deletion-mark.json), not the per-block path alone.
+	bkt = block.BucketWithGlobalMarkers(bkt)
+	userBkt := bucket.NewUserBucketClient(userID, bkt, nil)
+
+	// Generate one Level-1 block per tested age, all covering the same time range.
+	for range ages {
+		generateStorageBlock(t, storageDir, userID, metricName, blockMinT, blockMaxT, step)
+	}
+
+	entries, err := os.ReadDir(filepath.Join(storageDir, userID))
+	require.NoError(t, err)
+
+	var l1BlockIDs []ulid.ULID
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		id, err := ulid.Parse(entry.Name())
+		require.NoError(t, err)
+		l1BlockIDs = append(l1BlockIDs, id)
+	}
+	require.Len(t, l1BlockIDs, len(ages))
+
+	// Generate the Level-2 "already compacted" replacement block covering the same time range.
+	// GenerateBlockFromSpec always writes Compaction.Level=1, so override it and rewrite meta.json
+	// before uploading.
+	l2Dir := t.TempDir()
+	specs := []*block.SeriesSpec{{
+		Labels: labels.FromStrings(model.MetricNameLabel, metricName),
+		Chunks: []chunks.Meta{must(chunks.ChunkFromSamples([]chunks.Sample{
+			test.Sample{TS: blockMinT, Val: 1},
+			test.Sample{TS: blockMaxT - 1, Val: 1},
+		}))},
+	}}
+	l2Meta, err := block.GenerateBlockFromSpec(l2Dir, specs)
+	require.NoError(t, err)
+	l2Meta.Compaction.Level = 2
+	l2BlockDir := filepath.Join(l2Dir, l2Meta.ULID.String())
+	require.NoError(t, l2Meta.WriteToDir(log.NewNopLogger(), l2BlockDir))
+	_, err = block.Upload(ctx, log.NewNopLogger(), userBkt, l2BlockDir, nil)
+	require.NoError(t, err)
+
+	// Mark every Level-1 block for deletion, each at a different simulated age.
+	now := time.Now()
+	for i, a := range ages {
+		mark := block.DeletionMark{
+			ID:           l1BlockIDs[i],
+			DeletionTime: now.Add(-a.age).Unix(),
+			Version:      block.DeletionMarkVersion1,
+		}
+
+		var buf bytes.Buffer
+		require.NoError(t, json.NewEncoder(&buf).Encode(&mark))
+		require.NoError(t, userBkt.Upload(ctx, path.Join(mark.ID.String(), block.DeletionMarkFilename), &buf))
+	}
+
+	createBucketIndex(t, bkt, userID)
+
+	var allowedTenants *util.AllowList
+	reg := prometheus.NewPedanticRegistry()
+	stores, err := NewBucketStores(cfg, "", newNoShardingStrategy(), bkt, allowedTenants, defaultLimitsOverrides(t), log.NewNopLogger(), reg)
+	require.NoError(t, err)
+	require.NoError(t, services.StartAndAwaitRunning(ctx, stores))
+	t.Cleanup(func() {
+		require.NoError(t, services.StopAndAwaitTerminated(context.Background(), stores))
+	})
+
+	req := &storepb.SeriesRequest{
+		MinTime: blockMinT,
+		MaxTime: blockMaxT,
+		Matchers: []storepb.LabelMatcher{{
+			Type:  storepb.LabelMatcher_EQ,
+			Name:  model.MetricNameLabel,
+			Value: metricName,
+		}},
+	}
+
+	for i, a := range ages {
+		t.Run(a.name, func(t *testing.T) {
+			srv := newStoreGatewayTestServer(t, stores)
+			_, warnings, hints, _, err := srv.Series(setUserIDToGRPCContext(ctx, userID), req)
+			require.NoError(t, err)
+			assert.Empty(t, warnings)
+
+			queried := make(map[string]bool, len(hints.QueriedBlocks))
+			for _, b := range hints.QueriedBlocks {
+				queried[b.Id] = true
+			}
+
+			assert.True(t, queried[l2Meta.ULID.String()], "Level-2 replacement block should always be served")
+
+			l1ID := l1BlockIDs[i].String()
+			switch a.name {
+			case "60m":
+				// Deletion mark age equals the filter's delay exactly (IgnoreDeletionMarkFilter
+				// drops a block only once age strictly exceeds the delay). Real elapsed time
+				// between writing the mark and the filter evaluating it makes this boundary
+				// non-deterministic, so it's reported but not asserted.
+				t.Logf("age=60m boundary: Level-1 block %s queried=%v (informational only)", l1ID, queried[l1ID])
+			case "70m":
+				assert.False(t, queried[l1ID], "Level-1 block should be dropped at age=%s (past the 1h delay)", a.name)
+			default:
+				assert.True(t, queried[l1ID], "Level-1 block should still be served at age=%s (within the 1h delay)", a.name)
+			}
+		})
+	}
 }
 
 func prepareStorageConfig(tb testing.TB) mimir_tsdb.BlocksStorageConfig {
