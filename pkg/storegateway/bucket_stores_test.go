@@ -813,6 +813,104 @@ func TestBucketStore_Series_IgnoreDeletionMarkAging(t *testing.T) {
 	}
 }
 
+// TestBucketStore_Series_MixedCompactionLevelsAlwaysQueried checks whether block selection at
+// request-execution time distinguishes blocks by compaction level at all, using three unmarked
+// blocks (Level 1, Level 2, Level 3) that all cover the same time range.
+//
+// A live Level-1 + Level-2 + Level-3 overlap for the exact same data is not expected to occur
+// naturally in production: a Level-1-to-Level-2 merge is exempt from the compactor's "don't
+// compact recent blocks prematurely" guard when maxCompactionLevel()==1
+// (split_merge_grouper.go:178-182), so it happens within minutes of the source blocks appearing.
+// A Level-2-to-Level-3 merge has no such exemption (its inputs are already Level 2), so it only
+// becomes eligible once the full higher-range window has closed - by which time the original
+// Level-1 sources have long since aged past the store-gateway's 1h deletion-mark delay and been
+// physically dropped (see TestBucketStore_Series_IgnoreDeletionMarkAging). This test constructs
+// the state synthetically anyway, since nothing in the block-selection code prevents it, to check
+// whether the "no compaction-level preference" behavior generalizes past two simultaneous levels.
+func TestBucketStore_Series_MixedCompactionLevelsAlwaysQueried(t *testing.T) {
+	const (
+		userID     = "user-1"
+		metricName = "test"
+	)
+
+	const blockMinT, blockMaxT = int64(0), int64(10000)
+
+	ctx := context.Background()
+	cfg := prepareStorageConfig(t)
+	storageDir := t.TempDir()
+
+	bkt, err := filesystem.NewBucketClient(filesystem.Config{Directory: storageDir})
+	require.NoError(t, err)
+	userBkt := bucket.NewUserBucketClient(userID, bkt, nil)
+
+	// Level-1 block, generated the same way as every other test in this file.
+	generateStorageBlock(t, storageDir, userID, metricName, blockMinT, blockMaxT, 100)
+	entries, err := os.ReadDir(filepath.Join(storageDir, userID))
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	l1ID, err := ulid.Parse(entries[0].Name())
+	require.NoError(t, err)
+
+	// Level-2 and Level-3 blocks covering the same range: GenerateBlockFromSpec always writes
+	// Compaction.Level=1, so override it and rewrite meta.json before uploading, same approach
+	// as the Level-2 block in TestBucketStore_Series_IgnoreDeletionMarkAging.
+	uploadBlockAtLevel := func(level int) ulid.ULID {
+		dir := t.TempDir()
+		specs := []*block.SeriesSpec{{
+			Labels: labels.FromStrings(model.MetricNameLabel, metricName),
+			Chunks: []chunks.Meta{must(chunks.ChunkFromSamples([]chunks.Sample{
+				test.Sample{TS: blockMinT, Val: 1},
+				test.Sample{TS: blockMaxT - 1, Val: 1},
+			}))},
+		}}
+		meta, err := block.GenerateBlockFromSpec(dir, specs)
+		require.NoError(t, err)
+		meta.Compaction.Level = level
+		blockDir := filepath.Join(dir, meta.ULID.String())
+		require.NoError(t, meta.WriteToDir(log.NewNopLogger(), blockDir))
+		_, err = block.Upload(ctx, log.NewNopLogger(), userBkt, blockDir, nil)
+		require.NoError(t, err)
+		return meta.ULID
+	}
+	l2ID := uploadBlockAtLevel(2)
+	l3ID := uploadBlockAtLevel(3)
+
+	createBucketIndex(t, bkt, userID)
+
+	var allowedTenants *util.AllowList
+	reg := prometheus.NewPedanticRegistry()
+	stores, err := NewBucketStores(cfg, "", newNoShardingStrategy(), bkt, allowedTenants, defaultLimitsOverrides(t), log.NewNopLogger(), reg)
+	require.NoError(t, err)
+	require.NoError(t, services.StartAndAwaitRunning(ctx, stores))
+	t.Cleanup(func() {
+		require.NoError(t, services.StopAndAwaitTerminated(context.Background(), stores))
+	})
+
+	req := &storepb.SeriesRequest{
+		MinTime: blockMinT,
+		MaxTime: blockMaxT,
+		Matchers: []storepb.LabelMatcher{{
+			Type:  storepb.LabelMatcher_EQ,
+			Name:  model.MetricNameLabel,
+			Value: metricName,
+		}},
+	}
+
+	srv := newStoreGatewayTestServer(t, stores)
+	_, warnings, hints, _, err := srv.Series(setUserIDToGRPCContext(ctx, userID), req)
+	require.NoError(t, err)
+	assert.Empty(t, warnings)
+
+	queried := make(map[string]bool, len(hints.QueriedBlocks))
+	for _, b := range hints.QueriedBlocks {
+		queried[b.Id] = true
+	}
+
+	assert.True(t, queried[l1ID.String()], "Level-1 block should be queried alongside higher levels covering the same range")
+	assert.True(t, queried[l2ID.String()], "Level-2 block should be queried alongside other levels covering the same range")
+	assert.True(t, queried[l3ID.String()], "Level-3 block should be queried alongside lower levels covering the same range")
+}
+
 func prepareStorageConfig(tb testing.TB) mimir_tsdb.BlocksStorageConfig {
 	tmpDir := tb.TempDir()
 
