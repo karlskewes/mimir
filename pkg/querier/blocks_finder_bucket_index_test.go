@@ -103,6 +103,94 @@ func TestBucketIndexBlocksFinder_GetBlocks(t *testing.T) {
 	}
 }
 
+// TestBucketIndexBlocksFinder_GetBlocks_DeletionMarkAging checks, at several simulated deletion-mark
+// ages, which blocks GetBlocks still returns relative to IgnoreDeletionMarksDelay set to the
+// production default for IgnoreDeletionMarksWhileQueryingDelay (50m).
+func TestBucketIndexBlocksFinder_GetBlocks_DeletionMarkAging(t *testing.T) {
+	const userID = "user-1"
+	const blockMinT, blockMaxT = 0, 10000
+
+	ctx := context.Background()
+	bkt, _ := mimir_testutil.PrepareFilesystemBucket(t)
+
+	ages := []struct {
+		name string
+		age  time.Duration
+	}{
+		{"10m", 10 * time.Minute},
+		{"20m", 20 * time.Minute},
+		{"30m", 30 * time.Minute},
+		{"33m", 33 * time.Minute},
+		{"40m", 40 * time.Minute},
+		{"50m", 50 * time.Minute},
+		{"60m", 60 * time.Minute},
+		{"70m", 70 * time.Minute},
+	}
+
+	// A block with no deletion mark, covering the same time range as the aged blocks below, to
+	// confirm it's always returned regardless of the others' ages.
+	permanentBlock := &bucketindex.Block{ID: ulid.MustNew(1, nil), MinTime: blockMinT, MaxTime: blockMaxT}
+	blocks := bucketindex.Blocks{permanentBlock}
+	ageBlocks := make([]*bucketindex.Block, len(ages))
+	var marks bucketindex.BlockDeletionMarks
+
+	now := time.Now()
+	for i, a := range ages {
+		b := &bucketindex.Block{ID: ulid.MustNew(uint64(i+2), nil), MinTime: blockMinT, MaxTime: blockMaxT}
+		blocks = append(blocks, b)
+		ageBlocks[i] = b
+		marks = append(marks, &bucketindex.BlockDeletionMark{ID: b.ID, DeletionTime: now.Add(-a.age).Unix()})
+	}
+
+	idx := &bucketindex.Index{
+		Version:            bucketindex.IndexVersion1,
+		Blocks:             blocks,
+		BlockDeletionMarks: marks,
+		UpdatedAt:          time.Now().Unix(),
+	}
+	require.NoError(t, bucketindex.WriteIndex(ctx, bkt, userID, nil, idx))
+
+	cfg := BucketIndexBlocksFinderConfig{
+		IndexLoader: bucketindex.LoaderConfig{
+			CheckInterval:         time.Minute,
+			UpdateOnStaleInterval: time.Minute,
+			UpdateOnErrorInterval: time.Minute,
+			IdleTimeout:           time.Minute,
+		},
+		MaxStalePeriod:           time.Hour,
+		IgnoreDeletionMarksDelay: 50 * time.Minute, // matches the IgnoreDeletionMarksWhileQueryingDelay production default
+	}
+	finder := NewBucketIndexBlocksFinder(cfg, bkt, nil, log.NewNopLogger(), nil)
+	require.NoError(t, services.StartAndAwaitRunning(ctx, finder))
+	t.Cleanup(func() {
+		require.NoError(t, services.StopAndAwaitTerminated(ctx, finder))
+	})
+
+	returned, _, err := finder.GetBlocks(ctx, userID, blockMinT, blockMaxT)
+	require.NoError(t, err)
+
+	present := make(map[ulid.ULID]bool, len(returned))
+	for _, b := range returned {
+		present[b.ID] = true
+	}
+
+	assert.True(t, present[permanentBlock.ID], "block without a deletion mark should always be returned")
+
+	for i, a := range ages {
+		switch a.name {
+		case "50m":
+			// Deletion mark age equals the delay exactly (GetBlocks excludes a block only once age
+			// strictly exceeds the delay). Real elapsed time between writing the mark and GetBlocks
+			// evaluating it makes this boundary non-deterministic, so it's reported but not asserted.
+			t.Logf("age=50m boundary: block %s returned=%v (informational only)", ageBlocks[i].ID, present[ageBlocks[i].ID])
+		case "60m", "70m":
+			assert.False(t, present[ageBlocks[i].ID], "block should be excluded at age=%s (past the 50m delay)", a.name)
+		default:
+			assert.True(t, present[ageBlocks[i].ID], "block should still be returned at age=%s (within the 50m delay)", a.name)
+		}
+	}
+}
+
 func BenchmarkBucketIndexBlocksFinder_GetBlocks(b *testing.B) {
 	const (
 		numBlocks        = 1000
