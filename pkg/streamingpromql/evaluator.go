@@ -4,6 +4,7 @@ package streamingpromql
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 
@@ -12,7 +13,6 @@ import (
 	"github.com/grafana/dskit/cancellation"
 	"github.com/grafana/dskit/tenant"
 	"github.com/grafana/dskit/tracing"
-	"github.com/pkg/errors"
 	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/util/annotations"
 
