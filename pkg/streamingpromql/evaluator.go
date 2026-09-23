@@ -60,120 +60,11 @@ func (e *Evaluator) Evaluate(ctx context.Context, observer EvaluationObserver) (
 	// Read here rather than in the deferred function below, which runs after ctx is reassigned.
 	rootQueryID := rootqueryid.IDFromContext(ctx)
 
-	defer func() {
-		msg := make([]interface{}, 0, 2*(6+4+2+1)) // 3 fields for all query types, plus worst case of 4 fields for range queries, 2 fields for a failed query and 1 for the root query ID
+	// Wrapped in a closure so that err is read when the evaluation finishes, not when this
+	// deferred call is registered.
+	defer func() { e.logEvaluationStats(logger, rootQueryID, err) }()
 
-		msg = append(msg,
-			"msg", "evaluation stats",
-			"estimatedPeakMemoryConsumption", int64(e.MemoryConsumptionTracker.PeakEstimatedMemoryConsumptionBytes()),
-			"originalExpression", e.originalExpression,
-			"nodeCount", len(e.nodeRequests),
-		)
-
-		msg = rootqueryid.AppendLogFields(msg, rootQueryID)
-
-		if len(e.nodeRequests) == 1 {
-			timeRange := e.nodeRequests[0].TimeRange
-
-			if timeRange.IsInstant {
-				msg = append(msg,
-					"timeRangeType", "instant",
-					"time", timeRange.StartT,
-				)
-			} else {
-				msg = append(msg,
-					"timeRangeType", "range",
-					"start", timeRange.StartT,
-					"end", timeRange.EndT,
-					"step", timeRange.IntervalMilliseconds,
-				)
-			}
-		}
-
-		if err == nil {
-			msg = append(msg, "status", "success")
-		} else {
-			msg = append(msg,
-				"status", "failed",
-				"err", err,
-			)
-		}
-
-		level.Info(logger).Log(msg...)
-		e.engine.estimatedPeakMemoryConsumption.Observe(float64(e.MemoryConsumptionTracker.PeakEstimatedMemoryConsumptionBytes()))
-	}()
-
-	// Recover from panics during evaluation. A panic can come from the engine's own invariant checks,
-	// a Go runtime error, or library code (notably the Prometheus histogram library, which panics on
-	// invalid data such as a native histogram with a negative-offset span that older versions could
-	// write). Unhandled, it would crash a querier or ruler shared by many tenants.
-	//
-	// surfaceEvaluationPanics decides what happens, regardless of the panic's source:
-	//   - Enabled (dev and ops): re-raise every panic so it crashes the process and bugs fail fast.
-	//   - Disabled (the default, production): convert every panic into a query error, matching the
-	//     Prometheus engine, so one bad query or series cannot take down the component.
-	//
-	// Either way the stats logging above reports the query as failed. Recovered panics are counted,
-	// labelled by tenant and a coarse reason, and logged with a stack trace (except known invalid-data
-	// panics, which can recur on every evaluation over the same series).
-	defer func() {
-		r := recover()
-		if r == nil {
-			return
-		}
-
-		rErr, isErr := r.(error)
-		if err == nil {
-			if isErr {
-				err = rErr
-			} else {
-				err = fmt.Errorf("panic during query evaluation: %v", r)
-			}
-		}
-
-		// logWithStack logs msg with the panic's stack trace. It must run in this deferred function,
-		// while the unwinding stack is still intact, so the trace reaches the panic site: re-panicking
-		// would otherwise discard those frames, and when recovering the log is the only pointer to them.
-		logWithStack := func(l log.Logger, msg string) {
-			buf := make([]byte, 64<<10)
-			buf = buf[:runtime.Stack(buf, false)]
-			l.Log("msg", msg, "err", r, "expr", e.originalExpression, "stacktrace", string(buf))
-		}
-
-		if e.engine.surfaceEvaluationPanics {
-			logWithStack(level.Error(logger), "panic while evaluating query, re-panicking to crash")
-			panic(r)
-		}
-
-		userID := ""
-		if tenantIDs, tenantErr := tenant.TenantIDs(ctx); tenantErr == nil {
-			userID = tenant.JoinTenantIDs(tenantIDs)
-		}
-
-		// Classify the panic so data problems and likely bugs can be told apart without reading logs.
-		// Validation errors from the histogram library mean invalid stored data; a Go runtime error is
-		// almost certainly an engine bug; anything else is unclassified and may also be a bug.
-		_, isRuntimeErr := r.(runtime.Error)
-		reason := "other"
-		if isErr {
-			var validationErr histogram.Error
-			switch {
-			case errors.As(rErr, &validationErr):
-				reason = "invalid_data"
-			case isRuntimeErr:
-				reason = "runtime_error"
-			}
-		}
-
-		e.engine.evaluationPanics.WithLabelValues(userID, reason).Inc()
-		if reason == "invalid_data" {
-			// Origin is known and this recurs over the same invalid series, so log no stack trace.
-			level.Warn(logger).Log("msg", "recovered from panic while evaluating query, returning it as a query error", "err", r, "expr", e.originalExpression)
-		} else {
-			// A possible engine bug that no longer crashes: the stack trace is the only pointer to its origin.
-			logWithStack(level.Error(logger), "recovered from panic while evaluating query, returning it as a query error")
-		}
-	}()
+	defer e.handleEvaluationPanic(ctx, logger, &err)
 
 	// Add the memory consumption tracker to the context of this query before executing it so
 	// that we can pass it to the rest of the read path and keep track of memory used loading
@@ -210,6 +101,137 @@ func (e *Evaluator) Evaluate(ctx context.Context, observer EvaluationObserver) (
 		defer e.closeOperators()
 	}
 
+	return e.runEvaluation(ctx, observer)
+}
+
+// logEvaluationStats logs the stats for this evaluation and records its peak memory consumption.
+func (e *Evaluator) logEvaluationStats(logger *spanlogger.SpanLogger, rootQueryID string, err error) {
+	msg := make([]interface{}, 0, 2*(6+4+2+1)) // 3 fields for all query types, plus worst case of 4 fields for range queries, 2 fields for a failed query and 1 for the root query ID
+
+	msg = append(msg,
+		"msg", "evaluation stats",
+		"estimatedPeakMemoryConsumption", int64(e.MemoryConsumptionTracker.PeakEstimatedMemoryConsumptionBytes()),
+		"originalExpression", e.originalExpression,
+		"nodeCount", len(e.nodeRequests),
+	)
+
+	msg = rootqueryid.AppendLogFields(msg, rootQueryID)
+
+	if len(e.nodeRequests) == 1 {
+		timeRange := e.nodeRequests[0].TimeRange
+
+		if timeRange.IsInstant {
+			msg = append(msg,
+				"timeRangeType", "instant",
+				"time", timeRange.StartT,
+			)
+		} else {
+			msg = append(msg,
+				"timeRangeType", "range",
+				"start", timeRange.StartT,
+				"end", timeRange.EndT,
+				"step", timeRange.IntervalMilliseconds,
+			)
+		}
+	}
+
+	if err == nil {
+		msg = append(msg, "status", "success")
+	} else {
+		msg = append(msg,
+			"status", "failed",
+			"err", err,
+		)
+	}
+
+	level.Info(logger).Log(msg...)
+	e.engine.estimatedPeakMemoryConsumption.Observe(float64(e.MemoryConsumptionTracker.PeakEstimatedMemoryConsumptionBytes()))
+}
+
+// handleEvaluationPanic recovers from panics during evaluation. A panic can come from the engine's
+// own invariant checks, a Go runtime error, or library code (notably the Prometheus histogram
+// library, which panics on invalid data such as a native histogram with a negative-offset span that
+// older versions could write). Unhandled, it would crash a querier or ruler shared by many tenants.
+//
+// surfaceEvaluationPanics decides what happens, regardless of the panic's source:
+//   - Enabled (dev and ops): re-raise every panic so it crashes the process and bugs fail fast.
+//   - Disabled (the default, production): convert every panic into a query error, matching the
+//     Prometheus engine, so one bad query or series cannot take down the component.
+//
+// Either way the stats logging reports the query as failed. Recovered panics are counted, labelled
+// by tenant and a coarse reason, and logged with a stack trace (except known invalid-data panics,
+// which can recur on every evaluation over the same series).
+//
+// Evaluate must defer this method directly. recover() returns nil if it is not called by a
+// function that Evaluate itself deferred.
+func (e *Evaluator) handleEvaluationPanic(ctx context.Context, logger *spanlogger.SpanLogger, err *error) {
+	r := recover()
+	if r == nil {
+		return
+	}
+
+	if *err == nil {
+		if rErr, isErr := r.(error); isErr {
+			*err = rErr
+		} else {
+			*err = fmt.Errorf("panic during query evaluation: %v", r)
+		}
+	}
+
+	if e.engine.surfaceEvaluationPanics {
+		logPanicWithStack(level.Error(logger), "panic while evaluating query, re-panicking to crash", r, e.originalExpression)
+		panic(r)
+	}
+
+	userID := ""
+	if tenantIDs, tenantErr := tenant.TenantIDs(ctx); tenantErr == nil {
+		userID = tenant.JoinTenantIDs(tenantIDs)
+	}
+
+	reason := classifyPanic(r)
+	e.engine.evaluationPanics.WithLabelValues(userID, reason).Inc()
+
+	if reason == "invalid_data" {
+		// Origin is known and this recurs over the same invalid series, so log no stack trace.
+		level.Warn(logger).Log("msg", "recovered from panic while evaluating query, returning it as a query error", "err", r, "expr", e.originalExpression)
+	} else {
+		// A possible engine bug that no longer crashes: the stack trace is the only pointer to its origin.
+		logPanicWithStack(level.Error(logger), "recovered from panic while evaluating query, returning it as a query error", r, e.originalExpression)
+	}
+}
+
+// classifyPanic returns the reason label for cortex_mimir_query_engine_evaluation_panics_total, so
+// that data problems and likely bugs can be told apart without reading logs. Validation errors from
+// the histogram library mean invalid stored data; a Go runtime error is almost certainly an engine
+// bug; anything else is unclassified and may also be a bug.
+func classifyPanic(r any) string {
+	rErr, isErr := r.(error)
+	if !isErr {
+		return "other"
+	}
+
+	var validationErr histogram.Error
+	if errors.As(rErr, &validationErr) {
+		return "invalid_data"
+	}
+
+	if _, isRuntimeErr := rErr.(runtime.Error); isRuntimeErr {
+		return "runtime_error"
+	}
+
+	return "other"
+}
+
+// logPanicWithStack logs msg with the panic's stack trace. It must run while the stack is still
+// unwinding, so that the trace reaches the panic site: re-panicking would otherwise discard those
+// frames, and when recovering the log is the only pointer to them.
+func logPanicWithStack(l log.Logger, msg string, r any, expr string) {
+	buf := make([]byte, 64<<10)
+	buf = buf[:runtime.Stack(buf, false)]
+	l.Log("msg", msg, "err", r, "expr", expr, "stacktrace", string(buf))
+}
+
+func (e *Evaluator) runEvaluation(ctx context.Context, observer EvaluationObserver) error {
 	if err := e.prepare(ctx); err != nil {
 		return err
 	}
