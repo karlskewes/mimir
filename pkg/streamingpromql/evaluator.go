@@ -64,8 +64,6 @@ func (e *Evaluator) Evaluate(ctx context.Context, observer EvaluationObserver) (
 	// deferred call is registered.
 	defer func() { e.logEvaluationStats(logger, rootQueryID, err) }()
 
-	defer e.handleEvaluationPanic(ctx, logger, &err)
-
 	// Add the memory consumption tracker to the context of this query before executing it so
 	// that we can pass it to the rest of the read path and keep track of memory used loading
 	// chunks from store-gateways or ingesters.
@@ -89,8 +87,8 @@ func (e *Evaluator) Evaluate(ctx context.Context, observer EvaluationObserver) (
 	defer e.engine.activeQueryTracker.Delete(queryID)
 
 	// The order of the deferred cancellations is important: we want to close all operators first, then
-	// cancel with errQueryFinished and not a timeout, so we must defer this function last
-	// (so that it runs before the cancellation of the context with timeout created above).
+	// cancel with errQueryFinished and not a timeout, so this must be registered after the
+	// cancellation of the context with timeout created above (so that it runs before it).
 	defer func() {
 		e.closeOperators()
 		cancel(errQueryFinished)
@@ -100,6 +98,16 @@ func (e *Evaluator) Evaluate(ctx context.Context, observer EvaluationObserver) (
 		// Close all operators a second time to ensure all operators behave correctly if Close is called multiple times.
 		defer e.closeOperators()
 	}
+
+	// Registered last, so it is the first deferred call to run while the stack unwinds. It
+	// therefore only sees panics from the evaluation below, never panics raised by the deferred
+	// calls above. That matters most for the pool double-return guard in
+	// MemoryConsumptionTracker, which panics from Close. The guard panics before the slice
+	// reaches the pool, so it prevents the corruption rather than reports it, and it only fires
+	// when the decrement would take the per-source total negative. The variant it cannot see is
+	// the one that corrupts the shared pool, so crashing on the variant it can see keeps the
+	// only evidence that the other one exists.
+	defer e.handleEvaluationPanic(ctx, logger, &err)
 
 	return e.runEvaluation(ctx, observer)
 }
