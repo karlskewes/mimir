@@ -107,6 +107,10 @@ func (e *Evaluator) Evaluate(ctx context.Context, observer EvaluationObserver) (
 	// when the decrement would take the per-source total negative. The variant it cannot see is
 	// the one that corrupts the shared pool, so crashing on the variant it can see keeps the
 	// only evidence that the other one exists.
+	//
+	// The position is also load-bearing for ctx. Arguments of a deferred call are evaluated when
+	// it is registered, so registering here passes the ctx that carries the memory consumption
+	// tracker, the cancellation and the timeout. Move this and both properties are lost.
 	defer e.handleEvaluationPanic(ctx, logger, &err)
 
 	return e.runEvaluation(ctx, observer)
@@ -178,12 +182,12 @@ func (e *Evaluator) handleEvaluationPanic(ctx context.Context, logger *spanlogge
 		return
 	}
 
-	if *err == nil {
-		if rErr, isErr := r.(error); isErr {
-			*err = rErr
-		} else {
-			*err = fmt.Errorf("panic during query evaluation: %v", r)
-		}
+	// err is always nil here. Evaluate registers this method after its last call that can set the
+	// named return, and a panic in runEvaluation aborts the return statement before it assigns.
+	if rErr, isErr := r.(error); isErr {
+		*err = rErr
+	} else {
+		*err = fmt.Errorf("panic during query evaluation: %v", r)
 	}
 
 	if e.engine.surfaceEvaluationPanics {
@@ -239,6 +243,8 @@ func logPanicWithStack(l log.Logger, msg string, r any, expr string) {
 	l.Log("msg", msg, "err", r, "expr", expr, "stacktrace", string(buf))
 }
 
+// runEvaluation evaluates every node request and reports the results to observer. It calls
+// observer.EvaluationCompleted when it returns nil, as Evaluate promises.
 func (e *Evaluator) runEvaluation(ctx context.Context, observer EvaluationObserver) error {
 	if err := e.prepare(ctx); err != nil {
 		return err
