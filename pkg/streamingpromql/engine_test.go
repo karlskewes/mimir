@@ -1956,6 +1956,68 @@ func TestEvaluator_PanicDuringEvaluation(t *testing.T) {
 	}
 }
 
+// TestClassifyPanic covers the reason label directly, including the cases
+// TestEvaluator_PanicDuringEvaluation cannot reach through a single injected panic: a wrapped
+// histogram validation error, and a plain error that is neither a runtime nor a histogram error.
+func TestClassifyPanic(t *testing.T) {
+	testCases := map[string]struct {
+		value    any
+		expected string
+	}{
+		"string": {
+			value:    "injected panic during evaluation",
+			expected: "other",
+		},
+		"non-error value": {
+			value:    42,
+			expected: "other",
+		},
+		"histogram validation error": {
+			value:    histogram.ErrHistogramSpanNegativeOffset,
+			expected: "invalid_data",
+		},
+		"wrapped histogram validation error": {
+			// The histogram library wraps its sentinels before panicking, so this is the shape the
+			// engine sees in practice: mustReduceResolution panics with the error returned by
+			// reduceResolution, which wraps ErrHistogramSpanNegativeOffset with %w.
+			value:    fmt.Errorf("span number 1 with offset -1: %w", histogram.ErrHistogramSpanNegativeOffset),
+			expected: "invalid_data",
+		},
+		"plain error": {
+			value:    errors.New("something went wrong"),
+			expected: "other",
+		},
+	}
+
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, testCase.expected, classifyPanic(testCase.value))
+		})
+	}
+}
+
+// TestClassifyPanic_RuntimeError checks a real runtime error, which cannot be written as a literal.
+func TestClassifyPanic_RuntimeError(t *testing.T) {
+	var r any
+
+	func() {
+		defer func() { r = recover() }()
+		s := make([]int, 0)
+		_ = s[1] // index out of range -> runtime.Error
+	}()
+
+	require.NotNil(t, r)
+	require.Equal(t, "runtime_error", classifyPanic(r))
+
+	// The runtime error check is a type assertion, so unlike the histogram check it does not
+	// unwrap. A wrapped runtime error is therefore unclassified. The Go runtime panics with these
+	// values directly, so nothing produces the wrapped form today. This pins the current
+	// behaviour, it is not a requirement.
+	rErr, isErr := r.(error)
+	require.True(t, isErr)
+	require.Equal(t, "other", classifyPanic(fmt.Errorf("while evaluating: %w", rErr)))
+}
+
 // poolAcquiringPanickingOperator takes a slice from a pool, panics, and returns the slice in Close.
 // It checks the evaluator returns pooled memory when recovering a panic (Close runs on the unwind path).
 type poolAcquiringPanickingOperator struct {
