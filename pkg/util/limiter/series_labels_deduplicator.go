@@ -101,8 +101,13 @@ func (sd *seriesDeduplicator) Deduplicate(newLabels labels.Labels, tracker *Memo
 	// Check if we've seen this hash before.
 	if existingLabels, found := sd.uniqueSeries[fingerprint]; !found {
 		// See newLabels for the first time. Track the series limit and its labels memory consumption.
+		// Store newLabels only after its memory is counted.
+		// Otherwise a later call finds a rejected series and returns it as counted.
+		if err := sd.trackNewLabels(newLabels, tracker); err != nil {
+			return labels.EmptyLabels(), err
+		}
 		sd.uniqueSeries[fingerprint] = newLabels
-		return sd.trackNewLabels(newLabels, tracker)
+		return newLabels, nil
 	} else if labels.Equal(existingLabels, newLabels) {
 		// Already see newLabels before. Deduplicate it by returning existingLabels. No need to increase memory consumption.
 		sd.metrics.seriesLabelsDeduplicated.Inc()
@@ -124,17 +129,20 @@ func (sd *seriesDeduplicator) Deduplicate(newLabels labels.Labels, tracker *Memo
 		}
 	}
 	// Despite there was a hash conflict, we see newLabels for the first time. Track the series limit and its labels memory consumption.
-	sd.conflictSeries[fingerprint] = append(hashConflictLabels, newLabels)
-	return sd.trackNewLabels(newLabels, tracker)
-}
-
-func (sd *seriesDeduplicator) trackNewLabels(newLabels labels.Labels, tracker *MemoryConsumptionTracker) (labels.Labels, error) {
-	err := tracker.IncreaseMemoryConsumptionForLabels(newLabels)
-	if err != nil {
+	if err := sd.trackNewLabels(newLabels, tracker); err != nil {
 		return labels.EmptyLabels(), err
 	}
-	sd.unreleasedBytes += newLabels.ByteSize()
+	sd.conflictSeries[fingerprint] = append(hashConflictLabels, newLabels)
 	return newLabels, nil
+}
+
+func (sd *seriesDeduplicator) trackNewLabels(newLabels labels.Labels, tracker *MemoryConsumptionTracker) error {
+	err := tracker.IncreaseMemoryConsumptionForLabels(newLabels)
+	if err != nil {
+		return err
+	}
+	sd.unreleasedBytes += newLabels.ByteSize()
+	return nil
 }
 
 func (sd *seriesDeduplicator) Release(lbls labels.Labels, tracker *MemoryConsumptionTracker) {
