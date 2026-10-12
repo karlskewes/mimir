@@ -208,6 +208,47 @@ func TestSeriesDeduplicator_Deduplicate_MemoryTrackingWithDuplicates(t *testing.
 	require.Equal(t, afterSecondAdd, afterDuplicateB, "Memory should not increase for duplicate series")
 }
 
+func TestSeriesDeduplicator_Deduplicate_RejectedSeriesIsNotCounted(t *testing.T) {
+	seriesA := labels.FromStrings(model.MetricNameLabel, "metric_a", "label", "a")
+	seriesB := labels.FromStrings(model.MetricNameLabel, "metric_b", "label", "b")
+
+	testCases := map[string]func(labels.Labels) uint64{
+		"no hash collision": func(l labels.Labels) uint64 { return l.Hash() },
+		"hash collision":    func(labels.Labels) uint64 { return 12345 },
+	}
+
+	for name, hashFunc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			deduplicator := &seriesDeduplicator{
+				uniqueSeries: make(map[uint64]labels.Labels),
+				hashFunc:     hashFunc,
+				metrics:      NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry()),
+			}
+			limit := seriesA.ByteSize() + seriesB.ByteSize() - 1
+			rejections := prometheus.NewCounter(prometheus.CounterOpts{Name: "test_rejections_total"})
+			memoryTracker := NewMemoryConsumptionTracker(t.Context(), limit, rejections, "test")
+			expectedErr := NewMaxEstimatedMemoryConsumptionPerQueryLimitError(limit).Error()
+
+			_, err := deduplicator.Deduplicate(seriesA, memoryTracker)
+			require.NoError(t, err)
+
+			// The limit rejects seriesB.
+			// A second call for seriesB, for example from another ingester zone, must not get seriesB back as already counted.
+			_, err = deduplicator.Deduplicate(seriesB, memoryTracker)
+			require.EqualError(t, err, expectedErr)
+			_, err = deduplicator.Deduplicate(seriesB, memoryTracker)
+			require.EqualError(t, err, expectedErr)
+
+			require.Equal(t, seriesA.ByteSize(), memoryTracker.CurrentEstimatedMemoryConsumptionBytesBySource(Labels))
+
+			// Release must not decrease memory for the series that the limit rejected.
+			deduplicator.Release(seriesA, memoryTracker)
+			require.NotPanics(t, func() { deduplicator.Release(seriesB, memoryTracker) })
+			require.Zero(t, memoryTracker.CurrentEstimatedMemoryConsumptionBytesBySource(Labels))
+		})
+	}
+}
+
 func TestSeriesDeduplicator_Release(t *testing.T) {
 	deduplicator := NewSeriesLabelsDeduplicator(NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry()))
 	memoryTracker := NewMemoryConsumptionTracker(t.Context(), 0, nil, "test")
