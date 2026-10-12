@@ -4,6 +4,7 @@ package querier
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/prometheus/common/model"
@@ -181,4 +182,32 @@ func TestMemoryTrackingQuerier_Select_MergedSetYieldsSeriesTwice(t *testing.T) {
 		}
 	})
 	require.Zero(t, tracker.CurrentEstimatedMemoryConsumptionBytesBySource(limiter.Labels))
+}
+
+func BenchmarkMemoryTrackingQuerier_Select(b *testing.B) {
+	for _, seriesCount := range []int{1_000, 100_000} {
+		b.Run(fmt.Sprintf("series=%d", seriesCount), func(b *testing.B) {
+			source := make([]labels.Labels, 0, seriesCount)
+			for i := range seriesCount {
+				source = append(source, labels.FromStrings(model.MetricNameLabel, "up", "pod", fmt.Sprintf("pod-%06d", i)))
+			}
+
+			inner := &deduplicatingQuerier{sources: [][]labels.Labels{source}}
+			q := &memoryTrackingQuerier{inner: inner, metrics: limiter.NewSeriesDeduplicatorMetrics(nil)}
+
+			b.ReportAllocs()
+
+			for b.Loop() {
+				tracker := limiter.NewMemoryConsumptionTracker(b.Context(), 0, nil, "test query")
+				set := q.Select(limiter.AddMemoryTrackerToContext(b.Context(), tracker), true, nil)
+				for set.Next() {
+					set.At()
+				}
+
+				if err := set.Err(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
