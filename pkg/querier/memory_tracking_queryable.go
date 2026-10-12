@@ -52,9 +52,10 @@ func (q *memoryTrackingQuerier) Select(ctx context.Context, sortSeries bool, hin
 		return storage.ErrSeriesSet(err)
 	}
 
-	ctx = limiter.ContextWithNewSeriesLabelsDeduplicator(ctx, q.metrics)
+	deduplicator := limiter.NewSeriesLabelsDeduplicator(q.metrics)
+	ctx = limiter.ContextWithSeriesLabelsDeduplicator(ctx, deduplicator)
 
-	return series.NewMemoryTrackingSeriesSet(q.inner.Select(ctx, sortSeries, hints, matchers...), memoryTracker)
+	return series.NewMemoryTrackingSeriesSet(q.inner.Select(ctx, sortSeries, hints, matchers...), deduplicator, memoryTracker)
 }
 
 func (q *memoryTrackingQuerier) LabelValues(ctx context.Context, name string, hints *storage.LabelHints, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error) {

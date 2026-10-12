@@ -208,6 +208,29 @@ func TestSeriesDeduplicator_Deduplicate_MemoryTrackingWithDuplicates(t *testing.
 	require.Equal(t, afterSecondAdd, afterDuplicateB, "Memory should not increase for duplicate series")
 }
 
+func TestSeriesDeduplicator_Release(t *testing.T) {
+	deduplicator := NewSeriesLabelsDeduplicator(NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry()))
+	memoryTracker := NewMemoryConsumptionTracker(t.Context(), 0, nil, "test")
+
+	seriesA := labels.FromStrings(model.MetricNameLabel, "metric_a", "label", "value_a")
+	seriesB := labels.FromStrings(model.MetricNameLabel, "metric_b", "label", "value_b")
+	seriesC := labels.FromStrings(model.MetricNameLabel, "metric_c", "label", "value_c")
+
+	_, err := deduplicator.Deduplicate(seriesA, memoryTracker)
+	require.NoError(t, err)
+	_, err = deduplicator.Deduplicate(seriesB, memoryTracker)
+	require.NoError(t, err)
+
+	deduplicator.Release(seriesA, memoryTracker)
+	require.Equal(t, seriesB.ByteSize(), memoryTracker.CurrentEstimatedMemoryConsumptionBytesBySource(Labels))
+
+	// A second release of seriesA, a release of seriesC that Deduplicate did not count, and a release of seriesB must not take the memory consumption below zero.
+	deduplicator.Release(seriesA, memoryTracker)
+	deduplicator.Release(seriesC, memoryTracker)
+	deduplicator.Release(seriesB, memoryTracker)
+	require.Zero(t, memoryTracker.CurrentEstimatedMemoryConsumptionBytesBySource(Labels))
+}
+
 func BenchmarkSeriesDeduplicator_Deduplicate_WithCallerDedup_NoDuplicates(b *testing.B) {
 	const (
 		metricName  = "test_metric"

@@ -1748,7 +1748,7 @@ func TestBlocksStoreQuerier_Select(t *testing.T) {
 			ctx = limiter.AddQueryLimiterToContext(ctx, testData.queryLimiter)
 			ctx = limiter.ContextWithNewUnlimitedMemoryConsumptionTracker(ctx)
 			metrics := limiter.NewSeriesDeduplicatorMetrics(reg)
-			ctx = limiter.ContextWithNewSeriesLabelsDeduplicator(ctx, metrics)
+			ctx = limiter.ContextWithSeriesLabelsDeduplicator(ctx, limiter.NewSeriesLabelsDeduplicator(metrics))
 			st, ctx := stats.ContextWithEmptyStats(ctx)
 			const tenantID = "user-1"
 			ctx = user.InjectOrgID(ctx, tenantID)
@@ -1874,7 +1874,7 @@ func TestBlocksStoreQuerier_Select_ClosedBeforeSelectFinishes(t *testing.T) {
 	ctx := user.InjectOrgID(context.Background(), "user-1")
 	ctx = limiter.ContextWithNewUnlimitedMemoryConsumptionTracker(ctx)
 	metrics := limiter.NewSeriesDeduplicatorMetrics(reg)
-	ctx = limiter.ContextWithNewSeriesLabelsDeduplicator(ctx, metrics)
+	ctx = limiter.ContextWithSeriesLabelsDeduplicator(ctx, limiter.NewSeriesLabelsDeduplicator(metrics))
 	querier := &blocksStoreQuerier{
 		minT:               minT,
 		maxT:               maxT,
@@ -1981,7 +1981,7 @@ func TestBlocksStoreQuerier_ShouldReturnContextCanceledIfContextWasCanceledWhile
 		)
 		ctx = limiter.ContextWithNewUnlimitedMemoryConsumptionTracker(ctx)
 		metrics := limiter.NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry())
-		ctx = limiter.ContextWithNewSeriesLabelsDeduplicator(ctx, metrics)
+		ctx = limiter.ContextWithSeriesLabelsDeduplicator(ctx, limiter.NewSeriesLabelsDeduplicator(metrics))
 
 		srv, q, reg := prepareTestCase(t)
 
@@ -2146,7 +2146,7 @@ func TestBlocksStoreQuerier_Select_cancelledContext(t *testing.T) {
 			ctx = limiter.ContextWithNewUnlimitedMemoryConsumptionTracker(ctx)
 			reg := prometheus.NewPedanticRegistry()
 			metrics := limiter.NewSeriesDeduplicatorMetrics(reg)
-			ctx = limiter.ContextWithNewSeriesLabelsDeduplicator(ctx, metrics)
+			ctx = limiter.ContextWithSeriesLabelsDeduplicator(ctx, limiter.NewSeriesLabelsDeduplicator(metrics))
 
 			const tenantID = "user-1"
 			ctx = user.InjectOrgID(ctx, tenantID)
@@ -2891,7 +2891,7 @@ func TestBlocksStoreQuerier_SelectSortedShouldHonorQueryStoreAfter(t *testing.T)
 			ctx = user.InjectOrgID(ctx, tenantID)
 			ctx = limiter.ContextWithNewUnlimitedMemoryConsumptionTracker(ctx)
 			metrics := limiter.NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry())
-			ctx = limiter.ContextWithNewSeriesLabelsDeduplicator(ctx, metrics)
+			ctx = limiter.ContextWithSeriesLabelsDeduplicator(ctx, limiter.NewSeriesLabelsDeduplicator(metrics))
 			q := &blocksStoreQuerier{
 				minT:               testData.queryMinT,
 				maxT:               testData.queryMaxT,
@@ -3124,7 +3124,7 @@ func TestBlocksStoreQuerier_PromQLExecution(t *testing.T) {
 			ctx := context.Background()
 			ctx = limiter.ContextWithNewUnlimitedMemoryConsumptionTracker(ctx)
 			metrics := limiter.NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry())
-			ctx = limiter.ContextWithNewSeriesLabelsDeduplicator(ctx, metrics)
+			ctx = limiter.ContextWithSeriesLabelsDeduplicator(ctx, limiter.NewSeriesLabelsDeduplicator(metrics))
 
 			// Mock the finder to simulate we need to query two blocks.
 			finder := &blocksFinderMock{

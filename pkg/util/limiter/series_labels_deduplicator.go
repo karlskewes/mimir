@@ -21,6 +21,11 @@ var (
 // SeriesLabelsDeduplicator is used to deduplicate series and track the unique series memory consumption.
 type SeriesLabelsDeduplicator interface {
 	Deduplicate(newLabels labels.Labels, tracker *MemoryConsumptionTracker) (labels.Labels, error)
+
+	// Release decreases the memory consumption for lbls.
+	// It does not check that Deduplicate counted lbls.
+	// It never decreases more in total than Deduplicate counted.
+	Release(lbls labels.Labels, tracker *MemoryConsumptionTracker)
 }
 
 type SeriesDeduplicatorMetrics struct {
@@ -47,6 +52,10 @@ type seriesDeduplicator struct {
 	uniqueSeries   map[uint64]labels.Labels
 	conflictSeries map[uint64][]labels.Labels
 
+	// unreleasedBytes is the number of labels bytes that Deduplicate counted and Release did not release yet.
+	// uniqueSeriesMx protects it.
+	unreleasedBytes uint64
+
 	// hashFunc as a function so that we can override in test.
 	hashFunc func(labels.Labels) uint64
 
@@ -63,9 +72,9 @@ func NewSeriesLabelsDeduplicator(metrics *SeriesDeduplicatorMetrics) SeriesLabel
 	}
 }
 
-// ContextWithNewSeriesLabelsDeduplicator adds a new SeriesLabelsDeduplicator to the context.
-func ContextWithNewSeriesLabelsDeduplicator(ctx context.Context, metrics *SeriesDeduplicatorMetrics) context.Context {
-	return context.WithValue(ctx, sdCtxKey, NewSeriesLabelsDeduplicator(metrics))
+// ContextWithSeriesLabelsDeduplicator adds sd to the context.
+func ContextWithSeriesLabelsDeduplicator(ctx context.Context, sd SeriesLabelsDeduplicator) context.Context {
+	return context.WithValue(ctx, sdCtxKey, sd)
 }
 
 func SeriesLabelsDeduplicatorFromContext(ctx context.Context) (SeriesLabelsDeduplicator, error) {
@@ -124,5 +133,15 @@ func (sd *seriesDeduplicator) trackNewLabels(newLabels labels.Labels, tracker *M
 	if err != nil {
 		return labels.EmptyLabels(), err
 	}
+	sd.unreleasedBytes += newLabels.ByteSize()
 	return newLabels, nil
+}
+
+func (sd *seriesDeduplicator) Release(lbls labels.Labels, tracker *MemoryConsumptionTracker) {
+	sd.uniqueSeriesMx.Lock()
+	defer sd.uniqueSeriesMx.Unlock()
+
+	b := min(lbls.ByteSize(), sd.unreleasedBytes)
+	sd.unreleasedBytes -= b
+	tracker.DecreaseMemoryConsumption(b, Labels)
 }

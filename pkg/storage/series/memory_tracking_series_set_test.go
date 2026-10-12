@@ -30,15 +30,16 @@ func TestMemoryTrackingSeriesSet(t *testing.T) {
 
 	ctx := context.Background()
 	tracker := limiter.NewMemoryConsumptionTracker(ctx, 0, nil, "test query")
+	deduplicator := limiter.NewSeriesLabelsDeduplicator(limiter.NewSeriesDeduplicatorMetrics(nil))
 
 	// Increase memory consumption for all series labels
 	for _, s := range []storage.Series{series1, series2, series3} {
-		err := tracker.IncreaseMemoryConsumptionForLabels(s.Labels())
+		_, err := deduplicator.Deduplicate(s.Labels(), tracker)
 		require.NoError(t, err)
 	}
 
 	innerSet := NewConcreteSeriesSetFromUnsortedSeries([]storage.Series{series1, series2, series3})
-	memTrackingSet := NewMemoryTrackingSeriesSet(innerSet, tracker)
+	memTrackingSet := NewMemoryTrackingSeriesSet(innerSet, deduplicator, tracker)
 
 	initialMemory := tracker.CurrentEstimatedMemoryConsumptionBytes()
 	require.Greater(t, initialMemory, uint64(0), "memory consumption must be above 0 after initial increase above")
@@ -79,15 +80,16 @@ func TestMemoryTrackingSeriesSet_MultipleAtCalls(t *testing.T) {
 
 	ctx := context.Background()
 	tracker := limiter.NewMemoryConsumptionTracker(ctx, 0, nil, "test query")
+	deduplicator := limiter.NewSeriesLabelsDeduplicator(limiter.NewSeriesDeduplicatorMetrics(nil))
 
 	// Increase memory consumption for all series labels
 	for _, s := range []storage.Series{series1, series2} {
-		err := tracker.IncreaseMemoryConsumptionForLabels(s.Labels())
+		_, err := deduplicator.Deduplicate(s.Labels(), tracker)
 		require.NoError(t, err)
 	}
 
 	innerSet := NewConcreteSeriesSetFromUnsortedSeries([]storage.Series{series1, series2})
-	memTrackingSet := NewMemoryTrackingSeriesSet(innerSet, tracker)
+	memTrackingSet := NewMemoryTrackingSeriesSet(innerSet, deduplicator, tracker)
 
 	initialMemory := tracker.CurrentEstimatedMemoryConsumptionBytes()
 
@@ -124,9 +126,10 @@ func TestMemoryTrackingSeriesSet_MultipleAtCalls(t *testing.T) {
 func TestMemoryTrackingSeriesSet_EmptySet(t *testing.T) {
 	ctx := context.Background()
 	tracker := limiter.NewMemoryConsumptionTracker(ctx, 0, nil, "test query")
+	deduplicator := limiter.NewSeriesLabelsDeduplicator(limiter.NewSeriesDeduplicatorMetrics(nil))
 
 	innerSet := NewConcreteSeriesSetFromUnsortedSeries([]storage.Series{})
-	memTrackingSet := NewMemoryTrackingSeriesSet(innerSet, tracker)
+	memTrackingSet := NewMemoryTrackingSeriesSet(innerSet, deduplicator, tracker)
 
 	require.False(t, memTrackingSet.Next())
 	require.Equal(t, uint64(0), tracker.CurrentEstimatedMemoryConsumptionBytes())

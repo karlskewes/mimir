@@ -1021,7 +1021,7 @@ func TestDistributor_PushQuery(t *testing.T) {
 	ctx := user.InjectOrgID(context.Background(), "user")
 	ctx = limiter.ContextWithNewUnlimitedMemoryConsumptionTracker(ctx)
 	metrics := limiter.NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry())
-	ctx = limiter.ContextWithNewSeriesLabelsDeduplicator(ctx, metrics)
+	ctx = limiter.ContextWithSeriesLabelsDeduplicator(ctx, limiter.NewSeriesLabelsDeduplicator(metrics))
 	nameMatcher := mustEqualMatcher(model.MetricNameLabel, metricName)
 	barMatcher := mustEqualMatcher("bar", "baz")
 
@@ -2574,7 +2574,7 @@ func TestSlowQueries(t *testing.T) {
 	ctx := user.InjectOrgID(context.Background(), "user")
 	ctx = limiter.ContextWithNewUnlimitedMemoryConsumptionTracker(ctx)
 	metrics := limiter.NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry())
-	ctx = limiter.ContextWithNewSeriesLabelsDeduplicator(ctx, metrics)
+	ctx = limiter.ContextWithSeriesLabelsDeduplicator(ctx, limiter.NewSeriesLabelsDeduplicator(metrics))
 	nameMatcher := mustEqualMatcher(model.MetricNameLabel, "foo")
 	nIngesters := 3
 	for happy := 0; happy <= nIngesters; happy++ {
@@ -2752,7 +2752,7 @@ func TestDistributor_MetricsForLabelMatchers(t *testing.T) {
 					ctx := user.InjectOrgID(context.Background(), "test")
 					ctx = api.ContextWithReadConsistencyLevel(ctx, api.ReadConsistencyStrong)
 					dedupMetrics := limiter.NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry())
-					ctx = limiter.ContextWithNewSeriesLabelsDeduplicator(ctx, dedupMetrics)
+					ctx = limiter.ContextWithSeriesLabelsDeduplicator(ctx, limiter.NewSeriesLabelsDeduplicator(dedupMetrics))
 
 					// Push fixtures
 					for _, series := range fixtures {
@@ -2875,7 +2875,7 @@ func TestDistributor_MetricsForLabelMatchers_adjustPushDownLimit(t *testing.T) {
 			ctx = api.ContextWithReadConsistencyLevel(ctx, api.ReadConsistencyStrong)
 			ctx = limiter.AddMemoryTrackerToContext(ctx, limiter.NewUnlimitedMemoryConsumptionTracker(ctx))
 			metrics := limiter.NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry())
-			ctx = limiter.ContextWithNewSeriesLabelsDeduplicator(ctx, metrics)
+			ctx = limiter.ContextWithSeriesLabelsDeduplicator(ctx, limiter.NewSeriesLabelsDeduplicator(metrics))
 
 			for _, series := range fixtures {
 				req := mockWriteRequest(series.lbls, series.value, series.timestamp)

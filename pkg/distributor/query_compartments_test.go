@@ -98,7 +98,7 @@ func TestDistributor_QueryStream_ShouldSupportCompartments(t *testing.T) {
 		t.Run(testName, func(t *testing.T) {
 			ctx := user.InjectOrgID(context.Background(), tenantID)
 			ctx = limiter.ContextWithNewUnlimitedMemoryConsumptionTracker(ctx)
-			ctx = limiter.ContextWithNewSeriesLabelsDeduplicator(ctx, limiter.NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry()))
+			ctx = limiter.ContextWithSeriesLabelsDeduplicator(ctx, limiter.NewSeriesLabelsDeduplicator(limiter.NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry())))
 
 			distributors, ingesters, distributorRegistries, _ := prepare(t, prepConfig{
 				numDistributors:         1,

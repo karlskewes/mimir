@@ -35,7 +35,7 @@ func TestDistributor_QueryStream_ShouldSupportIngestStorage(t *testing.T) {
 	ctx := user.InjectOrgID(context.Background(), tenantID)
 	ctx = limiter.ContextWithNewUnlimitedMemoryConsumptionTracker(ctx)
 	metrics := limiter.NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry())
-	ctx = limiter.ContextWithNewSeriesLabelsDeduplicator(ctx, metrics)
+	ctx = limiter.ContextWithSeriesLabelsDeduplicator(ctx, limiter.NewSeriesLabelsDeduplicator(metrics))
 	selectAllSeriesMatcher := mustEqualMatcher("bar", "baz")
 
 	tests := map[string]struct {
@@ -636,7 +636,7 @@ func TestDistributor_QueryStream_InactivePartitionsLookback(t *testing.T) {
 				ctx := user.InjectOrgID(context.Background(), tenantID)
 				ctx = limiter.ContextWithNewUnlimitedMemoryConsumptionTracker(ctx)
 				metrics := limiter.NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry())
-				ctx = limiter.ContextWithNewSeriesLabelsDeduplicator(ctx, metrics)
+				ctx = limiter.ContextWithSeriesLabelsDeduplicator(ctx, limiter.NewSeriesLabelsDeduplicator(metrics))
 
 				limits := prepareDefaultLimits()
 				limits.IngestionPartitionsTenantShardSize = shardingCfg.tenantShardSize

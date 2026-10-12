@@ -392,7 +392,7 @@ func TestBlocksStoreQuerier_Compartments_Select(t *testing.T) {
 		ctx := user.InjectOrgID(context.Background(), compartmentsTestTenant)
 		ctx = limiter.AddQueryLimiterToContext(ctx, limiter.NewQueryLimiter(0, 0, 0, 0, nil))
 		ctx = limiter.ContextWithNewUnlimitedMemoryConsumptionTracker(ctx)
-		ctx = limiter.ContextWithNewSeriesLabelsDeduplicator(ctx, limiter.NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry()))
+		ctx = limiter.ContextWithSeriesLabelsDeduplicator(ctx, limiter.NewSeriesLabelsDeduplicator(limiter.NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry())))
 		_, ctx = stats.ContextWithEmptyStats(ctx)
 
 		block0 := ulid.MustNew(1, nil)
@@ -459,7 +459,7 @@ func TestBlocksStoreQuerier_Compartments_Select(t *testing.T) {
 		ctx := user.InjectOrgID(context.Background(), compartmentsTestTenant)
 		ctx = limiter.AddQueryLimiterToContext(ctx, limiter.NewQueryLimiter(0, 0, 0, 0, nil))
 		ctx = limiter.ContextWithNewUnlimitedMemoryConsumptionTracker(ctx)
-		ctx = limiter.ContextWithNewSeriesLabelsDeduplicator(ctx, limiter.NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry()))
+		ctx = limiter.ContextWithSeriesLabelsDeduplicator(ctx, limiter.NewSeriesLabelsDeduplicator(limiter.NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry())))
 		_, ctx = stats.ContextWithEmptyStats(ctx)
 
 		block0 := ulid.MustNew(1, nil)
@@ -560,7 +560,7 @@ func TestBlocksStoreQuerier_Compartments_Select(t *testing.T) {
 					t.Run("via Select", func(t *testing.T) {
 						sctx := limiter.AddQueryLimiterToContext(ctx, limiter.NewQueryLimiter(0, 0, 0, 0, nil))
 						sctx = limiter.ContextWithNewUnlimitedMemoryConsumptionTracker(sctx)
-						sctx = limiter.ContextWithNewSeriesLabelsDeduplicator(sctx, limiter.NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry()))
+						sctx = limiter.ContextWithSeriesLabelsDeduplicator(sctx, limiter.NewSeriesLabelsDeduplicator(limiter.NewSeriesDeduplicatorMetrics(prometheus.NewPedanticRegistry())))
 						_, sctx = stats.ContextWithEmptyStats(sctx)
 
 						reg := prometheus.NewPedanticRegistry()

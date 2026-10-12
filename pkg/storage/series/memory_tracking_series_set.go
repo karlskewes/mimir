@@ -12,24 +12,25 @@ import (
 // MemoryTrackingSeriesSet is a storage.SeriesSet wrapper that decreases memory
 // consumption as series are consumed from the wrapped SeriesSet.
 //
-// The memory for each series' labels must be increased beforehand, typically via
-// SeriesLabelsDeduplicator during series selection from queriers (ingesters and store-gateways) or
-// just by increase manually using MemoryConsumptionTracker.IncreaseMemoryConsumptionForLabels.
+// The given SeriesLabelsDeduplicator counts the labels of each series before the wrapped SeriesSet yields it.
+// The ingester and store-gateway clients do this during Select.
 //
-// The wrapped SeriesSet should contain unique series that have already been deduplicated
-// (e.g., via MergeSeriesSet). MemoryTrackingSeriesSet decreases memory exactly once per
-// unique series as it is consumed via Next()/At() calls. If the wrapped SeriesSet contains
-// duplicate series, memory tracking will be inaccurate.
+// MemoryTrackingSeriesSet releases the labels of each series through the deduplicator on the first At() call after Next().
+// The wrapped SeriesSet can yield a series more than once, or yield a series that the deduplicator did not count.
+// In both cases, the labels memory does not go below zero.
+// But the tracker can report less labels memory than the query holds, until the caller consumes the remaining series.
 type MemoryTrackingSeriesSet struct {
 	inner                    storage.SeriesSet
+	deduplicator             limiter.SeriesLabelsDeduplicator
 	memoryConsumptionTracker *limiter.MemoryConsumptionTracker
 	// This flag prevents multiple decrements for the same series position when At() is called multiple times.
 	memoryDecreased bool
 }
 
-func NewMemoryTrackingSeriesSet(inner storage.SeriesSet, memoryConsumptionTracker *limiter.MemoryConsumptionTracker) storage.SeriesSet {
+func NewMemoryTrackingSeriesSet(inner storage.SeriesSet, deduplicator limiter.SeriesLabelsDeduplicator, memoryConsumptionTracker *limiter.MemoryConsumptionTracker) storage.SeriesSet {
 	return &MemoryTrackingSeriesSet{
 		inner:                    inner,
+		deduplicator:             deduplicator,
 		memoryConsumptionTracker: memoryConsumptionTracker,
 	}
 }
@@ -48,7 +49,7 @@ func (m *MemoryTrackingSeriesSet) At() storage.Series {
 		m.memoryDecreased = true
 		// The caller should IncreaseMemoryConsumption for labels if they want to retain the labels.
 		// In the future we should avoid calling decrease here and make it the caller responsibility.
-		m.memoryConsumptionTracker.DecreaseMemoryConsumptionForLabels(at.Labels())
+		m.deduplicator.Release(at.Labels(), m.memoryConsumptionTracker)
 	}
 	return at
 }
