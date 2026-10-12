@@ -6,13 +6,16 @@ import (
 	"context"
 	"testing"
 
+	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/util/annotations"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/grafana/mimir/pkg/storage/series"
 	"github.com/grafana/mimir/pkg/streaminglabelvalues"
+	"github.com/grafana/mimir/pkg/util/limiter"
 )
 
 // passThroughQuerier satisfies storage.Querier and mimirSearcher. The search
@@ -108,4 +111,74 @@ func TestMemoryTrackingQuerier_SearchLabelValues_InnerWithoutSearchReturnsErr(t 
 	defer rs.Close()
 	assert.False(t, rs.Next())
 	require.Error(t, rs.Err())
+}
+
+// deduplicatingQuerier counts the labels of each series with the deduplicator in the context, as the ingester and store-gateway clients do.
+// It wraps each source in a series set as given, without sorting.
+// It merges the sets.
+type deduplicatingQuerier struct {
+	nonSearcherQuerier
+	sources [][]labels.Labels
+}
+
+func (q *deduplicatingQuerier) Select(ctx context.Context, _ bool, _ *storage.SelectHints, _ ...*labels.Matcher) storage.SeriesSet {
+	tracker, err := limiter.MemoryConsumptionTrackerFromContext(ctx)
+	if err != nil {
+		return storage.ErrSeriesSet(err)
+	}
+
+	deduplicator, err := limiter.SeriesLabelsDeduplicatorFromContext(ctx)
+	if err != nil {
+		return storage.ErrSeriesSet(err)
+	}
+
+	sets := make([]storage.SeriesSet, 0, len(q.sources))
+	for _, source := range q.sources {
+		sourceSeries := make([]storage.Series, 0, len(source))
+		for _, lbls := range source {
+			uniqueLabels, err := deduplicator.Deduplicate(lbls, tracker)
+			if err != nil {
+				return storage.ErrSeriesSet(err)
+			}
+
+			sourceSeries = append(sourceSeries, series.NewConcreteSeries(uniqueLabels, nil, nil))
+		}
+
+		sets = append(sets, series.NewConcreteSeriesSetFromSortedSeries(sourceSeries))
+	}
+
+	return storage.NewMergeSeriesSet(sets, 0, storage.ChainedSeriesMerge)
+}
+
+func TestMemoryTrackingQuerier_Select_MergedSetYieldsSeriesTwice(t *testing.T) {
+	seriesA := labels.FromStrings(model.MetricNameLabel, "up", "pod", "a")
+	seriesB := labels.FromStrings(model.MetricNameLabel, "up", "pod", "b")
+
+	// The first source is not sorted.
+	// So the merge yields seriesA twice.
+	// The deduplicator counts the labels of seriesA once.
+	inner := &deduplicatingQuerier{sources: [][]labels.Labels{{seriesB, seriesA}, {seriesA}}}
+	q := &memoryTrackingQuerier{inner: inner, metrics: limiter.NewSeriesDeduplicatorMetrics(nil)}
+
+	tracker := limiter.NewMemoryConsumptionTracker(t.Context(), 0, nil, "test query")
+	ctx := limiter.AddMemoryTrackerToContext(t.Context(), tracker)
+
+	// Keep the labels of each series, as the query engine does.
+	set := q.Select(ctx, true, nil)
+	var kept []labels.Labels
+	for set.Next() {
+		lbls := set.At().Labels()
+		require.NoError(t, tracker.IncreaseMemoryConsumptionForLabels(lbls))
+		kept = append(kept, lbls)
+	}
+	require.NoError(t, set.Err())
+	require.Len(t, kept, 3)
+
+	// The query engine returns the labels that it kept.
+	require.NotPanics(t, func() {
+		for _, lbls := range kept {
+			tracker.DecreaseMemoryConsumptionForLabels(lbls)
+		}
+	})
+	require.Zero(t, tracker.CurrentEstimatedMemoryConsumptionBytesBySource(limiter.Labels))
 }
