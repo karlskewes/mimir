@@ -156,6 +156,10 @@ func yaml_emitter_emit(emitter *yaml_emitter_t, event *yaml_event_t) bool {
 		yaml_event_delete(event)
 		emitter.events_head++
 	}
+	if emitter.events_head == len(emitter.events) {
+		emitter.events = emitter.events[:0]
+		emitter.events_head = 0
+	}
 	return true
 }
 
