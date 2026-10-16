@@ -28,9 +28,15 @@ const (
 )
 
 // listRulesBenchFixture builds one tenant with 50 namespaces, 2,300 groups and 46,000 rules.
+func listRulesBenchFixture() rulespb.RuleGroupList {
+	return listRulesFixture(listRulesBenchNamespaces, listRulesBenchNamespaces*listRulesBenchGroupsPerNS, listRulesBenchNamespaces*listRulesBenchGroupsPerNS*listRulesBenchRulesPerGroup)
+}
+
+// listRulesFixture builds one tenant with numGroups groups and numRules rules.
+// It spreads the groups evenly over the namespaces, and the rules evenly over the groups.
 // Even rules are recording rules.
 // Odd rules are alerting rules.
-func listRulesBenchFixture() rulespb.RuleGroupList {
+func listRulesFixture(numNamespaces, numGroups, numRules int) rulespb.RuleGroupList {
 	// %[1]d is the rule index.
 	// %[2]d is a small per-rule number.
 	templates := []struct {
@@ -66,17 +72,20 @@ func listRulesBenchFixture() rulespb.RuleGroupList {
 	intervals := []model.Duration{model.Duration(30 * time.Second), model.Duration(time.Minute), model.Duration(2 * time.Minute), model.Duration(5 * time.Minute)}
 	forDurations := []model.Duration{model.Duration(time.Minute), model.Duration(5 * time.Minute), model.Duration(10 * time.Minute), model.Duration(15 * time.Minute)}
 
-	list := make(rulespb.RuleGroupList, 0, listRulesBenchNamespaces*listRulesBenchGroupsPerNS)
+	list := make(rulespb.RuleGroupList, 0, numGroups)
 	i := 0
-	for ns := 0; ns < listRulesBenchNamespaces; ns++ {
+	for ns := 0; ns < numNamespaces; ns++ {
 		namespace := fmt.Sprintf("namespace-%02d", ns)
-		for g := 0; g < listRulesBenchGroupsPerNS; g++ {
+		groupsInNS := (ns+1)*numGroups/numNamespaces - ns*numGroups/numNamespaces
+		for g := 0; g < groupsInNS; g++ {
+			j := len(list)
+			rulesInGroup := (j+1)*numRules/numGroups - j*numRules/numGroups
 			rg := rulefmt.RuleGroup{
 				Name:     fmt.Sprintf("group-%02d-%02d", ns, g),
 				Interval: intervals[g%len(intervals)],
-				Rules:    make([]rulefmt.Rule, 0, listRulesBenchRulesPerGroup),
+				Rules:    make([]rulefmt.Rule, 0, rulesInGroup),
 			}
-			for r := 0; r < listRulesBenchRulesPerGroup; r++ {
+			for r := 0; r < rulesInGroup; r++ {
 				tmpl := templates[i%len(templates)]
 				expr := fmt.Sprintf(tmpl.expr, i, i%7)
 				if i%2 == 0 {
