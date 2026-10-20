@@ -156,6 +156,8 @@ func yaml_emitter_emit(emitter *yaml_emitter_t, event *yaml_event_t) bool {
 		yaml_event_delete(event)
 		emitter.events_head++
 	}
+	// Reuse the queue once every event in it has been written.
+	// Otherwise it grows by one slot per event for the life of the emitter.
 	if emitter.events_head == len(emitter.events) {
 		emitter.events = emitter.events[:0]
 		emitter.events_head = 0

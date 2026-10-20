@@ -1324,8 +1324,8 @@ github.com/julienschmidt/httprouter v1.3.0 h1:U0609e9tgbseu3rBINet9P48AI/D3oJs4d
 github.com/julienschmidt/httprouter v1.3.0/go.mod h1:JR6WtHb+2LUe8TCKY3cZOxFyyO8IZAc4RVcycCCAKdM=
 github.com/jung-kurt/gofpdf v1.0.0/go.mod h1:7Id9E/uU8ce6rXgefFLlgrJj/GYY22cpxn+r32jIOes=
 github.com/jung-kurt/gofpdf v1.0.3-0.20190309125859-24315acbbda5/go.mod h1:7Id9E/uU8ce6rXgefFLlgrJj/GYY22cpxn+r32jIOes=
-github.com/karlskewes/go-yaml/v3 v3.0.0-20261020051351-24f631d1ea13 h1:PsL5RCYS4kKg6rj0JesmDxgO3FdGKxHJ5wo+e8un4ks=
-github.com/karlskewes/go-yaml/v3 v3.0.0-20261020051351-24f631d1ea13/go.mod h1:FWqXKmpTKh7spGdV89XqWZN+kdZL8NZJJWyZQtuTXiI=
+github.com/karlskewes/go-yaml/v3 v3.0.0-20261020074705-cec8cb9a83af h1:KbU7mI+g+YYLJt0MUZs1pfj52VfMxzCJCHSyDTLGaiw=
+github.com/karlskewes/go-yaml/v3 v3.0.0-20261020074705-cec8cb9a83af/go.mod h1:FWqXKmpTKh7spGdV89XqWZN+kdZL8NZJJWyZQtuTXiI=
 github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51/go.mod h1:CzGEWj7cYgsdH8dAjBGEr58BoE7ScuLd+fwFZ44+/x8=
 github.com/keybase/go-keychain v0.0.1 h1:way+bWYa6lDppZoZcgMbYsvC7GxljxrskdNInRtuthU=
 github.com/keybase/go-keychain v0.0.1/go.mod h1:PdEILRW3i9D8JcdM+FmY6RwkHGnhHxXwkPPMeUgOK1k=
