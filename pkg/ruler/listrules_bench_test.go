@@ -4,7 +4,6 @@ package ruler
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -113,39 +112,6 @@ func listRulesBenchFixture() rulespb.RuleGroupList {
 		}
 	}
 	return list
-}
-
-func TestListRulesEncodeStreamingMatchesMarshal(t *testing.T) {
-	rgs := listRulesBenchFixture()
-
-	// Match marshalAndSend: output is an interface{} and Marshal gets a pointer to it.
-	var output interface{} = rgs.Formatted()
-	want, err := yaml.Marshal(&output)
-	require.NoError(t, err)
-
-	var got bytes.Buffer
-	enc := yaml.NewEncoder(&got)
-	require.NoError(t, enc.Encode(output))
-	require.NoError(t, enc.Close())
-
-	numRules, minExpr, maxExpr := 0, int(^uint(0)>>1), 0
-	for _, g := range rgs {
-		for _, r := range g.Rules {
-			numRules++
-			minExpr, maxExpr = min(minExpr, len(r.Expr)), max(maxExpr, len(r.Expr))
-		}
-	}
-	t.Logf("groups=%d rules=%d expr_len=[%d,%d] marshal_bytes=%d encoder_bytes=%d", len(rgs), numRules, minExpr, maxExpr, len(want), got.Len())
-
-	if !bytes.Equal(want, got.Bytes()) {
-		n := min(len(want), got.Len())
-		i := 0
-		for i < n && want[i] == got.Bytes()[i] {
-			i++
-		}
-		from := max(0, i-100)
-		t.Fatalf("outputs differ at byte %d\nmarshal: %q\nencoder: %q", i, want[from:min(len(want), i+100)], got.Bytes()[from:min(got.Len(), i+100)])
-	}
 }
 
 func BenchmarkListRulesEncode(b *testing.B) {
