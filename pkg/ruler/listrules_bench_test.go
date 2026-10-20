@@ -241,8 +241,9 @@ func BenchmarkListRulesEncode(b *testing.B) {
 		b.ReportMetric(float64(n), "out-bytes")
 	})
 
-	// Reference floor only.
-	// rulefmt has no json tags, so this output is not API compatible.
+	// Reference point for sec/op and allocs/op only.
+	// The output is not API compatible.
+	// rulefmt has no json tags.
 	b.Run("json_marshal", func(b *testing.B) {
 		b.ReportAllocs()
 		var n int
