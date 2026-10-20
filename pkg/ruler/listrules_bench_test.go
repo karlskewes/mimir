@@ -208,8 +208,7 @@ func BenchmarkListRulesEncode(b *testing.B) {
 	})
 
 	// Reference point for sec/op and allocs/op only.
-	// The output is not API compatible.
-	// rulefmt has no json tags.
+	// rulefmt has no json tags, so this output is not API compatible.
 	b.Run("json_marshal", func(b *testing.B) {
 		b.ReportAllocs()
 		var n int
