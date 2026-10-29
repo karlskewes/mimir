@@ -60,6 +60,7 @@ type DefaultMultiTenantManager struct {
 	lastReloadSuccessful          *prometheus.GaugeVec
 	lastReloadSuccessfulTimestamp *prometheus.GaugeVec
 	configUpdatesTotal            *prometheus.CounterVec
+	ruleGroupsUnloadedTotal       *prometheus.CounterVec
 	registry                      prometheus.Registerer
 	logger                        log.Logger
 
@@ -99,6 +100,10 @@ func NewDefaultMultiTenantManager(cfg Config, managerFactory ManagerFactory, reg
 		configUpdatesTotal: promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
 			Name: "cortex_ruler_config_updates_total",
 			Help: "Total number of config updates triggered by a user",
+		}, []string{"user"}),
+		ruleGroupsUnloadedTotal: promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
+			Name: "cortex_ruler_rule_groups_unloaded_total",
+			Help: "Total number of rule groups that this ruler stopped without stale markers because another ruler owns them now, while the user keeps other rule groups on this ruler.",
 		}, []string{"user"}),
 		registry: reg,
 		logger:   logger,
@@ -207,6 +212,11 @@ func (r *DefaultMultiTenantManager) syncRulesToManager(user string, groups, owne
 		level.Error(r.logger).Log("msg", "unable to create rule manager", "user", user, "err", err)
 		return
 	}
+	if created {
+		// Create the counter series at 0.
+		// Then rate and increase see the first rule groups that this ruler stops.
+		r.ruleGroupsUnloadedTotal.WithLabelValues(user)
+	}
 
 	// We need to update the manager only if it was just created or rules on disk have changed.
 	if !created && !update {
@@ -217,6 +227,14 @@ func (r *DefaultMultiTenantManager) syncRulesToManager(user string, groups, owne
 	level.Debug(r.logger).Log("msg", "updating rules", "user", user)
 	r.configUpdatesTotal.WithLabelValues(user).Inc()
 
+	// Stop the rule groups that another ruler owns now, before Update removes them.
+	// The other ruler evaluates these rule groups from now on.
+	// So these rule groups must not write stale markers.
+	if unloaded := manager.UnloadGroups(r.ruleGroupKeys(user, ownedElsewhere)...); unloaded > 0 {
+		r.ruleGroupsUnloadedTotal.WithLabelValues(user).Add(float64(unloaded))
+		level.Info(r.logger).Log("msg", "stopped rule groups that another ruler owns without stale markers", "user", user, "unloaded", unloaded)
+	}
+
 	err = manager.Update(r.cfg.EvaluationInterval, files, labels.EmptyLabels(), r.cfg.ExternalURL.String(), nil)
 	if err != nil {
 		r.lastReloadSuccessful.WithLabelValues(user).Set(0)
@@ -226,6 +244,18 @@ func (r *DefaultMultiTenantManager) syncRulesToManager(user string, groups, owne
 
 	r.lastReloadSuccessful.WithLabelValues(user).Set(1)
 	r.lastReloadSuccessfulTimestamp.WithLabelValues(user).SetToCurrentTime()
+}
+
+// ruleGroupKeys returns the rules manager keys of the user's rule groups.
+func (r *DefaultMultiTenantManager) ruleGroupKeys(user string, groups rulespb.RuleGroupList) []string {
+	keys := make([]string, 0, len(groups))
+	for _, g := range groups {
+		// The key must have the file name that the mapper gives to the rules manager.
+		// Otherwise UnloadGroups ignores the key.
+		// Then Update writes stale markers.
+		keys = append(keys, promRules.GroupKey(r.mapper.ruleFileName(user, g.Namespace), g.Name))
+	}
+	return keys
 }
 
 // getOrCreateManager retrieves the user manager. If it doesn't exist, it will create and start it first.
@@ -360,6 +390,7 @@ func (r *DefaultMultiTenantManager) removeUsersIf(shouldRemove func(userID strin
 		r.lastReloadSuccessful.DeleteLabelValues(userID)
 		r.lastReloadSuccessfulTimestamp.DeleteLabelValues(userID)
 		r.configUpdatesTotal.DeleteLabelValues(userID)
+		r.ruleGroupsUnloadedTotal.DeleteLabelValues(userID)
 		r.userManagerMetrics.RemoveUserRegistry(userID)
 		level.Info(r.logger).Log("msg", "deleted rule manager and local rule files", "user", userID)
 	}
