@@ -338,7 +338,7 @@ require (
 // version Mimir imports. Coordinate version bumps with the Grafana Alerting team.
 replace github.com/prometheus/alertmanager => github.com/prometheus/alertmanager v0.34.1
 
-replace github.com/prometheus/prometheus => github.com/grafana/mimir-prometheus v1.8.2-0.20261027185457-fce67773f5df
+replace github.com/prometheus/prometheus => github.com/karlskewes/mimir-prometheus v1.8.2-0.20261029010708-237bca11e1f5
 
 // Replace memberlist with our fork which includes some changes that haven't been
 // merged upstream yet for years and we don't expect to change anytime soon.
