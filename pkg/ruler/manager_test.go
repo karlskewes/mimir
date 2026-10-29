@@ -8,12 +8,14 @@ package ruler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,9 +23,12 @@ import (
 	"github.com/grafana/dskit/test"
 	"github.com/prometheus/client_golang/prometheus"
 	promtest "github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/rulefmt"
+	"github.com/prometheus/prometheus/model/value"
 	"github.com/prometheus/prometheus/notifier"
+	"github.com/prometheus/prometheus/promql"
 	promRules "github.com/prometheus/prometheus/rules"
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/assert"
@@ -31,8 +36,10 @@ import (
 	"go.uber.org/atomic"
 	"go.yaml.in/yaml/v3"
 
+	"github.com/grafana/mimir/pkg/mimirpb"
 	rulernotifier "github.com/grafana/mimir/pkg/ruler/notifier"
 	"github.com/grafana/mimir/pkg/ruler/rulespb"
+	util_log "github.com/grafana/mimir/pkg/util/log"
 	testutil "github.com/grafana/mimir/pkg/util/test"
 	"github.com/grafana/mimir/pkg/util/validation"
 )
@@ -487,6 +494,155 @@ func waitForAlertmanagerToBeDiscovered(t *testing.T, notifier *notifier.Manager)
 	require.Eventually(t, func() bool {
 		return len(notifier.Alertmanagers()) > 0
 	}, 10*time.Second, 100*time.Millisecond, "gave up waiting for static Alertmanager URL to be discovered")
+}
+
+func TestDefaultMultiTenantManager_SyncRuleGroups_ShouldNotWriteStaleMarkersForRuleGroupsOwnedByAnotherRuler(t *testing.T) {
+	const user = "user-1"
+
+	for _, partialSync := range []bool{false, true} {
+		// The second namespace needs url path escaping.
+		// It has only group-b.
+		// So its rule file goes away when group-b leaves.
+		for _, namespaceB := range []string{"namespace", "team/b%c d"} {
+			for _, ownedElsewhere := range []bool{false, true} {
+				name := fmt.Sprintf("partial sync: %t, group-b namespace: %q, group-b owned by another ruler: %t", partialSync, namespaceB, ownedElsewhere)
+				t.Run(name, func(t *testing.T) {
+					t.Parallel()
+
+					var (
+						ctx       = context.Background()
+						cfg       = defaultRulerConfig(t)
+						options   = applyPrepareOptions(t, cfg.Ring.Common.InstanceID)
+						reg       = prometheus.NewRegistry()
+						fs        = afero.NewMemMapFs()
+						queryable = newMockQueryable()
+						pusher    = newStaleMarkerPusher()
+						eng       = promql.NewEngine(promql.EngineOpts{
+							MaxSamples:         1e6,
+							ActiveQueryTracker: newTestActiveQueryTracker(t, util_log.SlogFromGoKit(log.NewNopLogger())),
+							Timeout:            time.Minute,
+						})
+						groupA = &rulespb.RuleGroupDesc{User: user, Namespace: "namespace", Name: "group-a", Interval: time.Second, Rules: []*rulespb.RuleDesc{{Record: "a", Expr: "1"}}}
+						groupB = &rulespb.RuleGroupDesc{User: user, Namespace: namespaceB, Name: "group-b", Interval: time.Second, Rules: []*rulespb.RuleDesc{{Record: "b", Expr: "1"}}}
+						// This ruler never loads group-c.
+						groupC = &rulespb.RuleGroupDesc{User: user, Namespace: "namespace", Name: "group-c", Interval: time.Second, Rules: []*rulespb.RuleDesc{{Record: "c", Expr: "1"}}}
+					)
+
+					factory := DefaultTenantManagerFactory(cfg, pusher, queryable, promRules.EngineQueryFunc(eng, queryable), fs, &NoopMultiTenantConcurrencyController{}, options.limits, nil)
+					m, err := NewDefaultMultiTenantManager(cfg, factory, reg, options.logger, nil, options.limits, fs)
+					require.NoError(t, err)
+					t.Cleanup(m.Stop)
+
+					syncRuleGroups := func(owned, ownedByOtherRulers rulespb.RuleGroupList) {
+						ownedByUser := map[string]rulespb.RuleGroupList{user: owned}
+						ownedElsewhereByUser := map[string]rulespb.RuleGroupList{user: ownedByOtherRulers}
+						if partialSync {
+							m.SyncPartialRuleGroups(ctx, ownedByUser, ownedElsewhereByUser)
+						} else {
+							m.SyncFullRuleGroups(ctx, ownedByUser, ownedElsewhereByUser)
+						}
+					}
+
+					syncRuleGroups(rulespb.RuleGroupList{groupA, groupB}, nil)
+					m.Start()
+
+					// Wait until both groups have written a sample.
+					// Then both groups have series to mark stale.
+					require.Eventually(t, func() bool {
+						return pusher.samples("a") > 0 && pusher.samples("b") > 0
+					}, 10*time.Second, 50*time.Millisecond)
+
+					var loadedA *promRules.Group
+					for _, g := range m.GetRules(user) {
+						if g.Name() == groupA.Name {
+							loadedA = g
+						}
+					}
+					require.NotNil(t, loadedA)
+
+					// Another ruler always owns group-c.
+					// The counter must count only the rule groups that this ruler stops.
+					groupsOwnedElsewhere := rulespb.RuleGroupList{groupC}
+					expectedUnloaded := 0
+					if ownedElsewhere {
+						groupsOwnedElsewhere = append(groupsOwnedElsewhere, groupB)
+						expectedUnloaded = 1
+					}
+					syncRuleGroups(rulespb.RuleGroupList{groupA}, groupsOwnedElsewhere)
+
+					// Only group-b leaves the rules manager.
+					// The rules manager keeps the same group-a.
+					// So group-a keeps its state.
+					groups := m.GetRules(user)
+					require.Len(t, groups, 1)
+					require.Same(t, loadedA, groups[0])
+
+					// group-b no longer evaluates on this ruler.
+					// The sync returns after group-b stops.
+					// So the sample count of group-b is final now.
+					samplesB := pusher.samples("b")
+
+					if ownedElsewhere {
+						// A removed group writes its stale markers 2 intervals after it stops.
+						time.Sleep(4 * groupB.Interval)
+						require.Zero(t, pusher.staleMarkers("b"))
+					} else {
+						require.Eventually(t, func() bool {
+							return pusher.staleMarkers("b") > 0
+						}, 10*time.Second, 50*time.Millisecond)
+					}
+					require.Equal(t, samplesB, pusher.samples("b"))
+					require.Zero(t, pusher.staleMarkers("a"))
+
+					require.NoError(t, promtest.GatherAndCompare(reg, strings.NewReader(fmt.Sprintf(`
+						# HELP cortex_ruler_rule_groups_unloaded_total Total number of rule groups that this ruler stopped without stale markers because another ruler owns them now, while the user keeps other rule groups on this ruler.
+						# TYPE cortex_ruler_rule_groups_unloaded_total counter
+						cortex_ruler_rule_groups_unloaded_total{user="user-1"} %d
+					`, expectedUnloaded)), "cortex_ruler_rule_groups_unloaded_total"))
+				})
+			}
+		}
+	}
+}
+
+// staleMarkerPusher counts the samples and the stale markers that it receives for each metric name.
+type staleMarkerPusher struct {
+	mtx         sync.Mutex
+	sampleCount map[string]int
+	staleCount  map[string]int
+}
+
+func newStaleMarkerPusher() *staleMarkerPusher {
+	return &staleMarkerPusher{sampleCount: map[string]int{}, staleCount: map[string]int{}}
+}
+
+func (p *staleMarkerPusher) Push(_ context.Context, req *mimirpb.WriteRequest) (*mimirpb.WriteResponse, error) {
+	p.mtx.Lock()
+	defer p.mtx.Unlock()
+
+	for _, ts := range req.Timeseries {
+		name := mimirpb.FromLabelAdaptersToLabels(ts.Labels).Get(model.MetricNameLabel)
+		for _, s := range ts.Samples {
+			if value.IsStaleNaN(s.Value) {
+				p.staleCount[name]++
+			} else {
+				p.sampleCount[name]++
+			}
+		}
+	}
+	return &mimirpb.WriteResponse{}, nil
+}
+
+func (p *staleMarkerPusher) samples(name string) int {
+	p.mtx.Lock()
+	defer p.mtx.Unlock()
+	return p.sampleCount[name]
+}
+
+func (p *staleMarkerPusher) staleMarkers(name string) int {
+	p.mtx.Lock()
+	defer p.mtx.Unlock()
+	return p.staleCount[name]
 }
 
 func getManager(m *DefaultMultiTenantManager, user string) RulesManager {
