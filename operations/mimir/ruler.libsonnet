@@ -70,6 +70,20 @@
 
   ruler_termination_grace_period_seconds:: 600,
 
+  // Time that the ruler needs to stop after the shutdown handover, for example to send queued alert notifications.
+  ruler_shutdown_stop_seconds:: 60,
+
+  // On shutdown, the ruler waits for -shutdown-delay and then for -ruler.shutdown-handover-period before it stops.
+  // Kubernetes kills the pod at the end of the termination grace period, so both waits must fit in it.
+  local rulerShutdownError =
+    local seconds(flag) =
+      local value = std.get($.ruler_args, flag, '0');
+      if std.isNumber(value) then value else if value == '0' then 0 else $.util.parseDuration(value);
+    local needed = seconds('shutdown-delay') + seconds('ruler.shutdown-handover-period') + $.ruler_shutdown_stop_seconds;
+    if !$._config.ruler_enabled || needed <= $.ruler_termination_grace_period_seconds then null
+    else 'shutdown-delay plus ruler.shutdown-handover-period plus ruler_shutdown_stop_seconds is %ds, more than ruler_termination_grace_period_seconds of %ds' % [needed, $.ruler_termination_grace_period_seconds],
+  assert rulerShutdownError == null : rulerShutdownError,
+
   newRulerDeployment(name, container, nodeAffinityMatchers=[])::
     deployment.new(name, 2, [container]) +
     $.newMimirNodeAffinityMatchers(nodeAffinityMatchers) +
