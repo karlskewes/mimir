@@ -3258,9 +3258,19 @@ tenant_federation:
 # (experimental) How long the ruler keeps evaluating its rule groups on shutdown
 # after leaving the ring, so other rulers can take them over without skipping an
 # evaluation. Should be longer than the time other rulers need to sync after a
-# ring change. 0 to disable.
+# ring change. With -ruler.shutdown-handover-period-auto, this is the maximum. 0
+# to disable.
 # CLI flag: -ruler.shutdown-handover-period
 [shutdown_handover_period: <duration> | default = 0s]
+
+# (experimental) Estimate the shutdown handover period from the ring check
+# period of 5s, -ruler.ring-change-max-debounce when -ruler.ring-change-debounce
+# is greater than 0, and two times the longest of the last 3 full rule syncs of
+# this ruler. Until the first full sync after the start, use
+# -ruler.shutdown-handover-period. -ruler.shutdown-handover-period is the
+# maximum, and must be greater than 0.
+# CLI flag: -ruler.shutdown-handover-period-auto
+[shutdown_handover_period_auto: <boolean> | default = false]
 
 # (experimental) Number of rules rules that don't have dependencies that we
 # allow to be evaluated concurrently across all tenants. 0 to disable.

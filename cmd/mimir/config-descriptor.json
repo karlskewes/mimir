@@ -18116,11 +18116,22 @@
           "kind": "field",
           "name": "shutdown_handover_period",
           "required": false,
-          "desc": "How long the ruler keeps evaluating its rule groups on shutdown after leaving the ring, so other rulers can take them over without skipping an evaluation. Should be longer than the time other rulers need to sync after a ring change. 0 to disable.",
+          "desc": "How long the ruler keeps evaluating its rule groups on shutdown after leaving the ring, so other rulers can take them over without skipping an evaluation. Should be longer than the time other rulers need to sync after a ring change. With -ruler.shutdown-handover-period-auto, this is the maximum. 0 to disable.",
           "fieldValue": null,
           "fieldDefaultValue": 0,
           "fieldFlag": "ruler.shutdown-handover-period",
           "fieldType": "duration",
+          "fieldCategory": "experimental"
+        },
+        {
+          "kind": "field",
+          "name": "shutdown_handover_period_auto",
+          "required": false,
+          "desc": "Estimate the shutdown handover period from the ring check period of 5s, -ruler.ring-change-max-debounce when -ruler.ring-change-debounce is greater than 0, and two times the longest of the last 3 full rule syncs of this ruler. Until the first full sync after the start, use -ruler.shutdown-handover-period. -ruler.shutdown-handover-period is the maximum, and must be greater than 0.",
+          "fieldValue": null,
+          "fieldDefaultValue": false,
+          "fieldFlag": "ruler.shutdown-handover-period-auto",
+          "fieldType": "boolean",
           "fieldCategory": "experimental"
         },
         {

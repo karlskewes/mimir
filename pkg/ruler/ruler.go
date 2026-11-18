@@ -59,6 +59,7 @@ var (
 	errInvalidTenantShardSize                                 = errors.New("invalid tenant shard size, the value must be greater or equal to 0")
 	errInnvalidRuleEvaluationConcurrencyMinDurationPercentage = errors.New("invalid tenant minimum duration percentage for rule evaluation concurrency, the value must be greater or equal to 0")
 	errInvalidRingChangeMaxDebounce                           = errors.New("invalid ring change debounce, the value must be less than the ring change max debounce")
+	errShutdownHandoverPeriodAutoWithoutMax                   = errors.New("invalid shutdown handover period, the value must be greater than 0 when the period is estimated")
 )
 
 const (
@@ -166,6 +167,11 @@ type Config struct {
 	// so that other rulers can take them over before this ruler stops evaluating them.
 	ShutdownHandoverPeriod time.Duration `yaml:"shutdown_handover_period" category:"experimental"`
 
+	// Whether the ruler estimates the shutdown handover period from its ring check period, its ring change debounce
+	// and its recent rule syncs.
+	// ShutdownHandoverPeriod is then the maximum.
+	ShutdownHandoverPeriodAuto bool `yaml:"shutdown_handover_period_auto" category:"experimental"`
+
 	// Allow to override timers for testing purposes.
 	RingCheckPeriod time.Duration `yaml:"-"`
 
@@ -206,6 +212,10 @@ func (cfg *Config) Validate(limits validation.Limits) error {
 
 	if cfg.RingChangeDebounce >= cfg.RingChangeMaxDebounce {
 		return errInvalidRingChangeMaxDebounce
+	}
+
+	if cfg.ShutdownHandoverPeriodAuto && cfg.ShutdownHandoverPeriod <= 0 {
+		return errShutdownHandoverPeriodAutoWithoutMax
 	}
 
 	return nil
@@ -257,7 +267,8 @@ func (cfg *Config) RegisterFlags(f *flag.FlagSet, logger log.Logger) {
 
 	f.DurationVar(&cfg.RingChangeDebounce, "ruler.ring-change-debounce", 0, "How long to wait for the ring to stop changing before syncing rules in response to a ring change. This can reduce duplicate rule evaluation when multiple ring changes happen in quick succession, such as during a rollout. 0 disables debouncing and syncs immediately on every detected ring change, which is the default and historical behaviour. Must be less than -ruler.ring-change-max-debounce.")
 	f.DurationVar(&cfg.RingChangeMaxDebounce, "ruler.ring-change-max-debounce", 15*time.Second, "The maximum time to keep postponing a ring-change-triggered sync while the ring keeps changing, so continuous ring churn can't indefinitely delay picking up a ring change. Only used when -ruler.ring-change-debounce is greater than 0.")
-	f.DurationVar(&cfg.ShutdownHandoverPeriod, "ruler.shutdown-handover-period", 0, "How long the ruler keeps evaluating its rule groups on shutdown after leaving the ring, so other rulers can take them over without skipping an evaluation. Should be longer than the time other rulers need to sync after a ring change. 0 to disable.")
+	f.DurationVar(&cfg.ShutdownHandoverPeriod, "ruler.shutdown-handover-period", 0, "How long the ruler keeps evaluating its rule groups on shutdown after leaving the ring, so other rulers can take them over without skipping an evaluation. Should be longer than the time other rulers need to sync after a ring change. With -ruler.shutdown-handover-period-auto, this is the maximum. 0 to disable.")
+	f.BoolVar(&cfg.ShutdownHandoverPeriodAuto, "ruler.shutdown-handover-period-auto", false, "Estimate the shutdown handover period from the ring check period of 5s, -ruler.ring-change-max-debounce when -ruler.ring-change-debounce is greater than 0, and two times the longest of the last 3 full rule syncs of this ruler. Until the first full sync after the start, use -ruler.shutdown-handover-period. -ruler.shutdown-handover-period is the maximum, and must be greater than 0.")
 
 	cfg.RingCheckPeriod = 5 * time.Second
 }
@@ -400,6 +411,9 @@ type Ruler struct {
 	allowedTenants *util.AllowList
 
 	syncBackoffConfig backoff.Config
+
+	// Durations of the last full rule syncs, for the shutdown handover estimate.
+	fullSyncDurations recentDurations
 
 	registry prometheus.Registerer
 	logger   log.Logger
@@ -554,9 +568,11 @@ func (r *Ruler) stopping(_ error) error {
 		level.Warn(r.logger).Log("msg", "failed to stop the ruler ring lifecycler", "err", err)
 	}
 
-	if r.cfg.ShutdownHandoverPeriod > 0 {
-		level.Info(r.logger).Log("msg", "ruler left the ring, evaluating rule groups while other rulers take them over", "handover_period", r.cfg.ShutdownHandoverPeriod)
-		time.Sleep(r.cfg.ShutdownHandoverPeriod)
+	if handoverPeriod := r.shutdownHandoverPeriod(); handoverPeriod > 0 {
+		longest, recorded := r.fullSyncDurations.longest()
+		level.Info(r.logger).Log("msg", "ruler left the ring, evaluating rule groups while other rulers take them over", "handover_period", handoverPeriod,
+			"estimated", r.cfg.ShutdownHandoverPeriodAuto, "recent_full_syncs", recorded, "longest_recent_full_sync", longest)
+		time.Sleep(handoverPeriod)
 	}
 
 	r.manager.Stop()
@@ -763,8 +779,69 @@ func (r *Ruler) syncRules(ctx context.Context, userIDs []string, reason rulesSyn
 	} else {
 		// This will also delete local group files for users that are no longer in 'configs' map.
 		r.manager.SyncFullRuleGroups(ctx, configs)
+
+		// The other rulers run a full sync after a ring change.
+		// An initial sync creates and updates the rules manager of each user.
+		// A ring change sync updates only the users with new or changed rule groups.
+		// A sync that the shutdown cancels returns early, so its duration is too short.
+		if reason != rulerSyncReasonInitial && ctx.Err() == nil {
+			r.fullSyncDurations.add(time.Since(startTime))
+		}
 	}
 	return nil
+}
+
+// shutdownHandoverPeriod returns how long the ruler keeps evaluating its rule groups after it leaves the ring.
+func (r *Ruler) shutdownHandoverPeriod() time.Duration {
+	if !r.cfg.ShutdownHandoverPeriodAuto {
+		return r.cfg.ShutdownHandoverPeriod
+	}
+
+	longest, recorded := r.fullSyncDurations.longest()
+	if recorded == 0 {
+		// With no full sync since the start, the ruler has no sync duration to estimate from.
+		return r.cfg.ShutdownHandoverPeriod
+	}
+
+	// Another ruler sees the ring change at its next ring check.
+	// Each ruler sets its ring check period once, with a jitter of up to 20%.
+	estimate := r.cfg.RingCheckPeriod * 6 / 5
+
+	// With a debounce, the other ruler waits until the ring stops changing, up to the max debounce.
+	if r.cfg.RingChangeDebounce > 0 {
+		estimate += r.cfg.RingChangeMaxDebounce
+	}
+
+	// A ruler that is in a sync starts its next sync only after the current sync.
+	// So it usually takes up to two syncs before the other ruler loads the rule groups of this ruler.
+	// Each ruler lists and loads only the rule groups that it owns.
+	// This ruler uses its own sync durations as an estimate for the other rulers.
+	// That is correct only when the rulers own similar numbers of rule groups.
+	// The estimate does not include the time that the KV store takes to send the ring change.
+	estimate += 2 * longest
+
+	return min(estimate, r.cfg.ShutdownHandoverPeriod)
+}
+
+// recentDurations keeps the last few durations of an operation.
+type recentDurations struct {
+	mtx   sync.Mutex
+	last  [3]time.Duration
+	count int
+}
+
+func (d *recentDurations) add(v time.Duration) {
+	d.mtx.Lock()
+	defer d.mtx.Unlock()
+	d.last[d.count%len(d.last)] = v
+	d.count++
+}
+
+// longest returns the longest of the last few durations, and how many durations it has.
+func (d *recentDurations) longest() (time.Duration, int) {
+	d.mtx.Lock()
+	defer d.mtx.Unlock()
+	return slices.Max(d.last[:]), min(d.count, len(d.last))
 }
 
 // loadRuleGroupsToSync loads the input rule group configs. This function should be used only when

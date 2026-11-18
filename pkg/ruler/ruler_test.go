@@ -3028,6 +3028,26 @@ func TestConfig_Validate(t *testing.T) {
 		require.ErrorIs(t, err, errInvalidTenantShardSize)
 	})
 
+	for name, tc := range map[string]struct {
+		auto        bool
+		period      time.Duration
+		expectedErr error
+	}{
+		"shutdown handover period estimate with a maximum of 0":     {auto: true, period: 0, expectedErr: errShutdownHandoverPeriodAutoWithoutMax},
+		"shutdown handover period estimate with a negative maximum": {auto: true, period: -time.Second, expectedErr: errShutdownHandoverPeriodAutoWithoutMax},
+		"shutdown handover period estimate with a positive maximum": {auto: true, period: time.Minute},
+		"fixed shutdown handover period of 0":                       {auto: false, period: 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := defaultRulerConfig(t)
+			cfg.ShutdownHandoverPeriodAuto = tc.auto
+			cfg.ShutdownHandoverPeriod = tc.period
+			limits := validation.MockDefaultLimits()
+
+			require.ErrorIs(t, cfg.Validate(*limits), tc.expectedErr)
+		})
+	}
+
 	t.Run("invalid client TLS config", func(t *testing.T) {
 		cfg := defaultRulerConfig(t)
 		cfg.ClientTLSConfig.GRPCCompression = "bogus"
